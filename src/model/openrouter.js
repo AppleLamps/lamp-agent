@@ -15,7 +15,7 @@ Prefer the code intelligence tools (find_symbols, find_definition, find_referenc
 For edits, prefer the smallest targeted primitive that fits: replace_exact for unique snippets, replace_range when you know line numbers, insert_before/insert_after for additions next to a unique marker, create_file for new files, rename_file/delete_file for file moves and deletes. Fall back to apply_patch for multi-hunk diffs and write_file only when you have read enough context to safely rewrite the whole file.
 Final responses should summarize what changed, checks run, risks, and next choices.`;
 
-const TOOL_DEFINITIONS = [
+export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
@@ -413,8 +413,12 @@ const TOOL_DEFINITIONS = [
 ];
 
 export function createOpenRouterAdapter(modelConfig) {
+  // The OpenAI-compatible transport here is shared by OpenRouter,
+  // OpenAI, and any other provider speaking the same wire format. The
+  // capability `provider` field reflects whatever the caller set so
+  // reports and audit logs show the real provider name.
   const capabilities = normalizeModelCapabilities({
-    provider: "openrouter",
+    provider: modelConfig.provider || "openrouter",
     toolCalling: modelConfig.capabilities?.toolCalling ?? true,
     jsonMode: Boolean(modelConfig.capabilities?.jsonMode),
     streaming: Boolean(modelConfig.capabilities?.streaming),
@@ -751,21 +755,14 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
     body.response_format = { type: "json_object" };
   }
 
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch(resolveEndpoint(modelConfig), {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "http://localhost",
-      "X-Title": "Plain-English AI Coding Harness"
-    },
+    headers: resolveHeaders(modelConfig, apiKey),
     body: JSON.stringify(body),
     signal
   });
   if (!response.ok) {
-    const error = new Error(`OpenRouter returned ${response.status}`);
-    error.status = response.status;
-    error.transient = response.status === 429 || response.status >= 500;
+    const error = providerError(modelConfig, response.status);
     throw error;
   }
   return response.json();
@@ -796,22 +793,14 @@ async function streamOpenRouterChat(apiKey, modelConfig, model, messages, option
   // back to recording a `null` usage record.
   body.stream_options = { include_usage: true };
 
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch(resolveEndpoint(modelConfig), {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "http://localhost",
-      "X-Title": "Plain-English AI Coding Harness"
-    },
+    headers: resolveHeaders(modelConfig, apiKey),
     body: JSON.stringify(body),
     signal
   });
   if (!response.ok) {
-    const error = new Error(`OpenRouter returned ${response.status}`);
-    error.status = response.status;
-    error.transient = response.status === 429 || response.status >= 500;
-    throw error;
+    throw providerError(modelConfig, response.status);
   }
   if (!response.body?.getReader) {
     throw new Error("Provider did not return a readable stream for chat.");
@@ -964,14 +953,9 @@ async function requestOpenRouterStream({ apiKey, modelConfig, messages, activeTa
 }
 
 async function streamOpenRouter(apiKey, modelConfig, model, messages, onToken) {
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetch(resolveEndpoint(modelConfig), {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "http://localhost",
-      "X-Title": "Plain-English AI Coding Harness"
-    },
+    headers: resolveHeaders(modelConfig, apiKey),
     body: JSON.stringify({
       model,
       messages,
@@ -979,10 +963,7 @@ async function streamOpenRouter(apiKey, modelConfig, model, messages, onToken) {
     })
   });
   if (!response.ok) {
-    const error = new Error(`OpenRouter returned ${response.status}`);
-    error.status = response.status;
-    error.transient = response.status === 429 || response.status >= 500;
-    throw error;
+    throw providerError(modelConfig, response.status);
   }
   if (!response.body?.getReader) {
     throw new Error("Provider did not return a readable stream.");
@@ -1035,6 +1016,63 @@ function modelCandidates(modelConfig) {
   ].filter(Boolean).filter((model, index, list) => list.indexOf(model) === index);
 }
 
+// ---- Provider transport helpers ----------------------------------------
+//
+// The chat-completion code in this file is OpenAI-format-compatible: it works
+// against any provider that speaks the same /chat/completions wire format
+// (OpenAI itself, OpenRouter, vLLM, Ollama in OpenAI-compat mode, LM Studio,
+// llama.cpp's `--api-server`, etc.). The only per-provider differences are
+// the endpoint URL and any extra HTTP headers. The helpers below let a
+// `modelConfig` override these without changing any of the call sites.
+//
+// Defaults match OpenRouter so the original `createOpenRouterAdapter`
+// behavior is preserved when nothing is configured.
+
+const DEFAULT_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_OPENROUTER_EXTRA_HEADERS = {
+  "HTTP-Referer": "http://localhost",
+  "X-Title": "Plain-English AI Coding Harness"
+};
+
+function resolveEndpoint(modelConfig) {
+  if (typeof modelConfig?.endpoint === "string" && modelConfig.endpoint.length) {
+    return modelConfig.endpoint;
+  }
+  if (typeof modelConfig?.baseUrl === "string" && modelConfig.baseUrl.length) {
+    // `baseUrl` is the OpenAI / Ollama / LM Studio convention; append the
+    // chat-completions path if the user gave us a base.
+    const base = modelConfig.baseUrl.replace(/\/+$/, "");
+    return `${base}/chat/completions`;
+  }
+  return DEFAULT_OPENROUTER_ENDPOINT;
+}
+
+function resolveHeaders(modelConfig, apiKey) {
+  const headers = {
+    "Authorization": `Bearer ${apiKey}`,
+    "Content-Type": "application/json"
+  };
+  const extra = modelConfig?.extraHeaders;
+  if (extra && typeof extra === "object") {
+    Object.assign(headers, extra);
+  } else if (modelConfig?.endpoint || modelConfig?.baseUrl) {
+    // The caller pointed us at a non-OpenRouter endpoint and did not
+    // supply extraHeaders; in that case do not silently send
+    // OpenRouter's `HTTP-Referer`/`X-Title` headers.
+  } else {
+    Object.assign(headers, DEFAULT_OPENROUTER_EXTRA_HEADERS);
+  }
+  return headers;
+}
+
+function providerError(modelConfig, status) {
+  const provider = modelConfig?.provider || "provider";
+  const error = new Error(`${provider} returned ${status}`);
+  error.status = status;
+  error.transient = status === 429 || status >= 500;
+  return error;
+}
+
 function isTransientProviderError(error) {
   if (error?.transient) return true;
   if (error?.status === 429 || error?.status >= 500) return true;
@@ -1082,7 +1120,7 @@ async function recordModelUsage(activeTask, entry) {
   });
 }
 
-async function executeTool(name, args, { tools, activeTask, allowedTools = null }) {
+export async function executeTool(name, args, { tools, activeTask, allowedTools = null }) {
   if (allowedTools && !allowedTools.includes(name)) {
     return { ok: false, blocked: true, message: `Tool ${name} is not allowed in the current phase.` };
   }

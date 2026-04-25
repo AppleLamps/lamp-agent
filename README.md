@@ -54,21 +54,23 @@ The CLI renders a styled chat shell with:
 
 ## Current Handoff Status
 
-Core MVP and Phase 2 are implemented and tested. Phase 3 items 1, 2,
-3, and 4 are in progress: item 1 (real-repo fixtures and end-to-end
+Core MVP and Phase 2 are implemented and tested. Phase 3 items 1
+through 5 are in progress: item 1 (real-repo fixtures and end-to-end
 CLI coverage) covers a wide failure-mode surface; item 2 (stronger
 targeted checks and parsers) has structured reporters, build-error
 parsers, failed-test → source mapping, and repair-loop wiring; item 3
 (pre-patch blast radius and edit preview) has the planner, the
-warning surface, the edit-preview tool, the `/plan` shortcut, and the
-phase-controller gate; item 4 (streaming wired into the CLI) has the
-SSE plumbing, tool-call delta reassembly, cancellation via
-`AbortController`, and streamed-usage recording. Latest verified
-baseline: `npm test` passes with 163 tests; `npm run test:e2e` runs
-13 end-to-end tests that drive the CLI binary against four fixture
-repositories. Latest pushed commit at this handoff: `02ccd7a Land
-pre-patch blast radius, warnings, edit preview (Phase 3 item 3)` on
-`main`.
+warning surface, the edit-preview tool, the `/plan` shortcut, and
+the phase-controller gate; item 4 (streaming wired into the CLI)
+has the SSE plumbing, tool-call delta reassembly, cancellation via
+`AbortController`, and streamed-usage recording; item 5 (multi-
+provider model adapters) lands OpenAI, local, and Anthropic
+adapters dispatched by `model.provider` from the config. Latest
+verified baseline: `npm test` passes with 170 tests; `npm run
+test:e2e` runs 13 end-to-end tests that drive the CLI binary
+against four fixture repositories. Latest pushed commit at this
+handoff: `725d4df Wire streaming and cancel-in-flight into the CLI
+(Phase 3 item 4)` on `main`.
 
 Most recent completed work:
 
@@ -207,6 +209,23 @@ Most recent completed work:
     chunk; `model-usage.jsonl` tags the entry with `streaming: true`.
   - The CLI prints tokens to stdout as they arrive with a one-line
     "Streaming model response" progress indicator on the first token.
+- Phase 3 item 5 progress (multi-provider adapters):
+  - `src/model/openai.js` — OpenAI Chat Completions adapter (also
+    works against Azure OpenAI by overriding `endpoint`).
+  - `src/model/local.js` — OpenAI-compatible local-server adapter
+    (Ollama, LM Studio, vLLM, llama.cpp `--api-server`). Requires
+    `endpoint` or `baseUrl` to be set.
+  - `src/model/anthropic.js` — direct Anthropic Messages API
+    adapter (no SDK dependency). Translates the harness's
+    `TOOL_DEFINITIONS` into Anthropic `input_schema`, supports
+    tool-calling chat plus text-only streaming via `streamText`,
+    and structured-JSON critique.
+  - `createModelAdapter` in `src/model/index.js` now dispatches by
+    `modelConfig.provider` (`openrouter` | `openai` | `anthropic`
+    | `local`); defaults to OpenRouter for backward compat. The
+    existing `LAMP_MODEL_ADAPTER` test-stub override still wins.
+  - Per-provider env var defaults: `OPENROUTER_API_KEY`,
+    `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LAMP_LOCAL_API_KEY`.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -230,18 +249,21 @@ Where we left off:
 
 Next recommended work:
 
-1. Item 5 (multi-provider model adapters). The
-   `createModelAdapter(config)` seam already exists in
-   `src/model/index.js`; add `src/model/anthropic.js`,
-   `src/model/openai.js`, and `src/model/local.js` adapters that
-   conform to the same contract.
-2. Item 4 leftovers: a streaming-aware `ui.assistant` variant that
+1. Item 6 (structured outputs beyond critique). Use JSON-mode
+   responses for the plan, edit-spec, and repair-finding artifacts
+   so the harness validates structured shapes instead of free-form
+   text where supported.
+2. Item 5 leftovers: Anthropic prompt caching
+   (`anthropic-beta: prompt-caching-2024-07-31`), Anthropic
+   streaming inside `respond`/`repair`, and a live-network smoke
+   test gated on per-provider env vars.
+3. Item 4 leftovers: a streaming-aware `ui.assistant` variant that
    renders tokens inline rather than as a progress message, and
    streaming the repair loop's model calls.
-3. Item 3 leftovers: a "preview" review action that shows the next
+4. Item 3 leftovers: a "preview" review action that shows the next
    staged patch before apply, and richer pre-patch impact analysis
    (rename / signature changes that ripple through the import graph).
-4. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring)
+5. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring)
    are smaller and can land alongside any of the above.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
@@ -383,7 +405,9 @@ before execution. Destructive command patterns are blocked.
 - `src/review/critique.js`: local/model critique pass.
 - `phase 2.txt`: completed Phase 2 roadmap, handoff status, and Phase 3 candidate list.
 - `phase 3.txt`: Phase 3 roadmap, with ten items, recommended build order, and Definition of Done.
-- `src/model/index.js`: pluggable model adapter factory (`createModelAdapter`); honors `LAMP_MODEL_ADAPTER` for tests and is the seam Phase 3 item 5 (multi-provider) will use.
+- `src/model/index.js`: pluggable model adapter factory (`createModelAdapter`); dispatches by `model.provider` (openrouter | openai | anthropic | local) and honors `LAMP_MODEL_ADAPTER` for test stubs.
+- `src/model/openrouter.js`: OpenAI-compatible transport (the shared base for OpenRouter, OpenAI, and local providers).
+- `src/model/openai.js` / `src/model/local.js` / `src/model/anthropic.js`: per-provider adapters.
 - `src/checks/structured-reporter.js`: reporter-aware parsers (TAP, Vitest JSON, Jest JSON, pytest JUnit XML, ESLint JSON) that produce the same record shape as `parseCheckOutput` and return null on mismatched input.
 - `src/task/pre-patch-plan.js`: pre-patch planner that produces expected scope, danger zones, and blocking warnings before the patch phase begins.
 - `test/fixtures/check-output/`: golden-output fixtures for the structured-reporter parsers (real captures and hand-crafted samples).

@@ -90,7 +90,23 @@ Current status:
   inline rather than as a progress message; streaming the repair
   loop's model calls; and surfacing tool-call announcements as a
   thinking spinner.
-- [ ] Multi-provider model adapters (item 5) — not started.
+- [~] Multi-provider model adapters (item 5) — most providers now
+  land. The OpenAI-compatible transport in `src/model/openrouter.js`
+  is parameterised by `endpoint` and `extraHeaders`, so OpenAI and
+  any local server speaking the same wire format share the same code
+  via thin wrappers (`src/model/openai.js`,
+  `src/model/local.js`). Anthropic has its own implementation in
+  `src/model/anthropic.js` against the Messages API directly (no
+  SDK dep). `createModelAdapter` in `src/model/index.js` dispatches
+  by `modelConfig.provider` (`openrouter` | `openai` | `anthropic` |
+  `local`); the existing `LAMP_MODEL_ADAPTER` test-stub override
+  still wins. Locked in by 7 new unit tests covering factory
+  dispatch, the adapter contract surface, OpenAI / local URL +
+  header behaviour, and Anthropic tool-translation. Still TBD:
+  prompt caching for Anthropic (`anthropic-beta:
+  prompt-caching-2024-07-31`), Anthropic streaming inside
+  `respond`/`repair`, and a live-network smoke test gated on
+  per-provider env vars.
 - [ ] Structured outputs beyond critique (item 6) — not started.
 - [ ] Resumable tasks and cancel-in-flight (item 7) — not started.
 - [ ] Dependency-aware edits and cross-file binding (item 8) — not started.
@@ -550,8 +566,10 @@ without leaving a half-completed task.
 
 ## 5. Multi-Provider Model Adapters
 
-Status: not started. Adapter contract exists in
-`src/model/adapter-contract.js`.
+Status: in progress. OpenAI / Anthropic / local adapters all land in
+this round; `createModelAdapter` dispatches by provider; remaining
+work is Anthropic-specific polish (caching, streaming-with-tools) and
+a live-network smoke harness.
 
 ### Goal
 
@@ -561,22 +579,48 @@ without rewriting task logic.
 
 ### Add
 
-- [ ] `src/model/anthropic.js` adapter using `@anthropic-ai/sdk`, with tool
-  calling, streaming, structured JSON, and prompt caching.
-- [ ] `src/model/openai.js` adapter for the OpenAI Chat Completions and
-  Responses API.
-- [ ] `src/model/local.js` adapter for an OpenAI-compatible local endpoint
-  (Ollama, LM Studio, llama.cpp) — useful for offline development.
-- [ ] Provider selection in `.agent/config.json` (`model.provider: "anthropic"
-  | "openai" | "openrouter" | "local"`) with a single `createModelAdapter`
-  factory in `src/model/index.js` that picks the right adapter.
-- [ ] Capability negotiation: each adapter declares real `capabilities` and
-  the harness no longer assumes streaming/tool-calling/JSON mode.
-- [ ] Per-provider env var documentation in README and config defaults.
-- [ ] Adapter contract tests (one per provider) that verify the
-  `MODEL_ADAPTER_METHODS` surface and capability shape.
-- [ ] A live-network smoke test (skipped unless an env var is set) that runs
-  one minimal request per provider against a small fixture.
+- [x] `src/model/anthropic.js` adapter implemented directly against
+  the Messages API (no SDK dep). Supports tool calling (translates
+  the harness's `TOOL_DEFINITIONS` into Anthropic `input_schema`),
+  text-only streaming via `streamText`, and structured-JSON critique.
+  Out of scope for this round: prompt caching and streaming inside
+  `respond`/`repair`.
+- [x] `src/model/openai.js` adapter for the OpenAI Chat Completions
+  API (compatible with Azure OpenAI when `endpoint` is overridden).
+- [x] `src/model/local.js` adapter for an OpenAI-compatible local
+  endpoint (Ollama, LM Studio, vLLM, llama.cpp's `--api-server`).
+  Requires `endpoint` or `baseUrl`.
+- [x] Provider selection in `.agent/config.json` (`model.provider:
+  "anthropic" | "openai" | "openrouter" | "local"`) with a single
+  `createModelAdapter` factory in `src/model/index.js` that picks
+  the right adapter. Defaults to `openrouter` for backward compat.
+- [x] Capability negotiation: each adapter declares real
+  `capabilities`; the OpenAI-compatible adapter now surfaces the
+  caller's provider name in `capabilities().provider` instead of the
+  hard-coded `"openrouter"` it used to emit when delegated to.
+- [ ] Per-provider env var documentation in README (per-provider
+  defaults are wired in `index.js`, but the README handoff section
+  could grow a quick table).
+- [x] Adapter contract tests (one per provider) verifying the
+  `MODEL_ADAPTER_METHODS` surface and capability shape. See
+  `test/multi-provider-adapters.test.js`.
+- [ ] A live-network smoke test (skipped unless an env var is set)
+  that runs one minimal request per provider against a small
+  fixture.
+
+### Notes for the next agent
+
+- The OpenAI-compatible transport reads `endpoint` and
+  `extraHeaders` from the model config. When `endpoint` (or
+  `baseUrl`) is set, `extraHeaders` defaults to `{}` rather than
+  the OpenRouter `HTTP-Referer`/`X-Title` pair — sending those to
+  OpenAI or a local server would just leak the harness identifier
+  unnecessarily.
+- The Anthropic adapter reuses the harness's `TOOL_DEFINITIONS`
+  catalog by translating each definition's `function.parameters`
+  field into Anthropic's `input_schema`. If new tools are added,
+  they automatically become available to all providers without
+  any extra wiring.
 
 ### Definition Of Done
 
