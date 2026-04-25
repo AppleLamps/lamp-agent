@@ -45,10 +45,14 @@ Current status:
   TypeScript `(line,col)` form, ESLint, and test-runner forms. Golden
   fixtures live under `test/fixtures/check-output/` (six structured-
   reporter samples) and `test/fixtures/check-output/build-errors/`
-  (seven build-tool samples). Still TBD for item 2: pytest JUnit
-  wiring (needs a tmp-file capture since pytest does not write JUnit
-  to stdout), ESLint structured wiring, and failed-test → source
-  mapping via the code index.
+  (seven build-tool samples). Failed-test → source mapping via the
+  code index is now done in `src/checks/relevant-files.js` and wired
+  into `runCheckCommand`; every check record carries a re-ranked
+  `likely_relevant_files` plus a `likely_relevant_files_provenance`
+  map (`stack` / `import-graph` / `co-located`). Still TBD for
+  item 2: pytest JUnit wiring (needs a tmp-file capture since pytest
+  does not write JUnit to stdout), ESLint structured wiring, and
+  feeding the new structured failure shape into `model.repair`.
 - [ ] Pre-patch blast radius and edit preview (item 3) — not started.
 - [ ] Streaming wired into the CLI (item 4) — not started.
 - [ ] Multi-provider model adapters (item 5) — not started.
@@ -321,10 +325,26 @@ so the repair loop can edit the right thing.
 - [ ] Framework-specific failure shapes recorded in `check-results.json`:
   expected/actual snapshot diffs, mismatched type vs value errors, missing
   module resolution, syntax-error file/line, lint rule and fix availability.
-- [ ] Failed-test → source mapping: walk imports from the failing test file to
+- [x] Failed-test → source mapping: walk imports from the failing test file to
   rank candidate source files, and surface the ranked list under
   `likely_relevant_files` with provenance (`stack`, `import-graph`,
-  `co-located`).
+  `co-located`). Implementation in `src/checks/relevant-files.js`
+  exposes `mapFailedTestsToSources(parsed, { codeIndex, allFiles, cwd })`
+  that resolves relative imports against the workspace file list (with
+  common extensions and `index.<ext>` fallback), applies a co-location
+  heuristic that drops `.test.`/`.spec.`/`_test.` from filenames, and
+  treats files inside `test/`/`tests/`/`__tests__/`/`spec/`/`specs/`
+  as test files even when they don't carry the conventional suffix.
+  `runCheckCommand` calls the mapper with the runtime's cached code
+  index after parsing, so every persisted check record now carries
+  both the re-ranked `likely_relevant_files` (import-graph >
+  co-located > stack) and a `likely_relevant_files_provenance` map.
+  Locked in by `test/relevant-files.test.js` (8 tests covering import
+  resolution, co-location, bare-specifier skipping, Windows path
+  normalisation, and the priority ordering) plus an integration test
+  in `test/targeted-check-tools.test.js` that runs a real failing
+  `node --test` and asserts `src/calculator.js` shows up with
+  `import-graph` provenance.
 - [x] Golden-output tests under `test/fixtures/check-output/` for each parser
   so future regressions show up as diffs.
 - [ ] Repair loop changes that prefer the new structured failure shape and

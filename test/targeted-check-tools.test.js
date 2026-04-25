@@ -204,6 +204,64 @@ describe("runTestFile picks the structured-reporter parser when one is exposed",
   });
 });
 
+describe("runCheckCommand enriches likely_relevant_files via the code index", () => {
+  let tmp;
+  let tools;
+  let originalEnv;
+
+  before(async () => {
+    tmp = await mkdtemp(path.join(tmpdir(), "relevant-files-"));
+    await writeFile(
+      path.join(tmp, "package.json"),
+      JSON.stringify({ type: "module", scripts: { test: "node --test specs/main.mjs" } })
+    );
+    await mkdir(path.join(tmp, "src"));
+    await writeFile(path.join(tmp, "src", "calculator.js"),
+      "export function brokenAdd(a, b) { return a + b - 1; }\n");
+    await mkdir(path.join(tmp, "specs"));
+    await writeFile(
+      path.join(tmp, "specs", "main.mjs"),
+      [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { brokenAdd } from '../src/calculator.js';",
+        "",
+        "test('off-by-one bug', () => {",
+        "  assert.equal(brokenAdd(2, 3), 5);",
+        "});",
+        ""
+      ].join("\n")
+    );
+    originalEnv = process.env;
+    process.env = cleanEnv();
+    tools = createToolRuntime({ cwd: tmp, config: config(), requestApproval: async () => ({ approved: true }) });
+  });
+
+  after(async () => {
+    process.env = originalEnv;
+    await rm(tmp, { recursive: true, force: true });
+  });
+
+  test("imports from a failing test file are surfaced under likely_relevant_files", async () => {
+    const activeTask = await createTask(tmp, "Run failing spec to populate import graph");
+    const result = await tools.runTestFile("specs/main.mjs", activeTask);
+
+    assert.equal(result.parsed.status, "failed");
+    // The mapping should pick up the imported source file via the
+    // `../src/calculator.js` import.
+    assert.ok(
+      result.parsed.likely_relevant_files.includes("src/calculator.js"),
+      `expected src/calculator.js in ${JSON.stringify(result.parsed.likely_relevant_files)}`
+    );
+    const provenance = result.parsed.likely_relevant_files_provenance || {};
+    const tags = provenance["src/calculator.js"] || [];
+    assert.ok(tags.includes("import-graph"),
+      `expected import-graph tag, got ${JSON.stringify(tags)}`);
+    // The failing test file itself should still appear with stack provenance.
+    assert.ok(result.parsed.likely_relevant_files.includes("specs/main.mjs"));
+  });
+});
+
 describe("runCheckCommand falls back to the regex parser when structured parsing fails", () => {
   let tmp;
   let tools;

@@ -7,6 +7,7 @@ import { applyFilePatch, parseUnifiedPatch } from "../patch/patch-engine.js";
 import { summarizeSnapshotDiff } from "../workspace/checkpoint.js";
 import { parseCheckOutput } from "../checks/check-parser.js";
 import { parseStructuredOutput } from "../checks/structured-reporter.js";
+import { mapFailedTestsToSources } from "../checks/relevant-files.js";
 import { detectTestRunner, findRelatedTestFiles } from "../checks/test-runner-detector.js";
 import { appendEvent } from "../log/event-log.js";
 import { buildCodeIndex, detectRoutes, findReferences as findReferencesIndex } from "../code/code-index.js";
@@ -416,6 +417,27 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
         parsedSource = parsedSource || "regex";
       }
       parsed.parsed_source = parsedSource;
+
+      // Enrich likely_relevant_files using the workspace's code index so
+      // failing test files are mapped to the source files they exercise.
+      // The code index is regex-based today; this is best-effort and the
+      // record stays usable if either the index or the workspace is
+      // empty.
+      try {
+        const index = await getCodeIndex();
+        const mapping = mapFailedTestsToSources(parsed, {
+          codeIndex: index,
+          allFiles: index?.files || [],
+          cwd
+        });
+        if (mapping.likely_relevant_files.length) {
+          parsed.likely_relevant_files = mapping.likely_relevant_files;
+        }
+        parsed.likely_relevant_files_provenance = mapping.likely_relevant_files_provenance;
+      } catch {
+        /* enrichment is best-effort */
+      }
+
       await recordCheckResult(activeTask, parsed, {
         stdout: result.stdout || "",
         stderr: result.stderr || ""

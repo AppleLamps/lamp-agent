@@ -58,13 +58,15 @@ Core MVP and Phase 2 are implemented and tested. Phase 3 items 1 and 2
 are in progress: item 1 (real-repo fixtures and end-to-end CLI coverage)
 is almost done; item 2 (stronger targeted checks and parsers) has the
 structured-reporter foundation in place, the test-runner wiring done
-for Node `--test`, Vitest, and Jest, and build-error parsers covering
-all seven targeted tools (esbuild, Vite/Rollup, webpack, Next.js,
-TypeScript pretty mode, Cargo, Go). Latest verified baseline:
-`npm test` passes with 134 tests; `npm run test:e2e` runs 13 end-to-end
-tests that drive the CLI binary against four fixture repositories. Latest
-pushed commit at this handoff: `92c8d13 Wire structured reporters into
-runCheckCommand for test runners` on `main`.
+for Node `--test`, Vitest, and Jest, build-error parsers covering all
+seven targeted tools (esbuild, Vite/Rollup, webpack, Next.js,
+TypeScript pretty mode, Cargo, Go), and the failed-test → source
+mapping that walks the failing test file's imports through the code
+index. Latest verified baseline: `npm test` passes with 143 tests;
+`npm run test:e2e` runs 13 end-to-end tests that drive the CLI binary
+against four fixture repositories. Latest pushed commit at this
+handoff: `c19b3d8 Add build-error parsers for esbuild, Vite, webpack,
+Next, TS, Cargo, Go` on `main`.
 
 Most recent completed work:
 
@@ -149,9 +151,18 @@ Most recent completed work:
     `test/fixtures/check-output/build-errors/` and a per-tool test
     suite that also verifies parsers compose cleanly when multiple
     tools' output appears in the same run.
+  - `src/checks/relevant-files.js` walks each failing test file's
+    imports through the code index, resolves relative paths against
+    the workspace file list (with common extensions and `index.<ext>`
+    fallback), applies a co-location heuristic, and treats files
+    inside `test/`/`tests/`/`__tests__/`/`spec/`/`specs/` as test
+    files even without the `.test.`/`.spec.` suffix. `runCheckCommand`
+    calls the mapper after parsing so every check record carries both
+    a re-ranked `likely_relevant_files` (import-graph > co-located
+    > stack) and a `likely_relevant_files_provenance` map.
   - Still TBD for item 2: pytest JUnit wiring (needs tmp-file
-    capture), ESLint structured wiring, and failed-test → source
-    mapping via the code index.
+    capture), ESLint structured wiring, and feeding the structured
+    failure shape into `model.repair`.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -175,13 +186,13 @@ Where we left off:
 
 Next recommended work:
 
-1. Continue Phase 3 item 2: add the failed-test → source mapping
-   (walk imports from the failing test file via the code index, rank
-   candidate source files, surface the ranked list under
-   `likely_relevant_files` with provenance). Then wire pytest JUnit
+1. Finish Phase 3 item 2 by feeding the new structured failure shape
+   (with `parsed_source`, `errors[]`, and provenance-tagged
+   `likely_relevant_files`) into `model.repair` so the repair loop
+   sees richer evidence than free-form blobs. Then wire pytest JUnit
    (needs tmp-file capture) and ESLint structured parsing.
-2. After that, the repair-loop wiring that feeds the new structured
-   failure shape into `model.repair`.
+2. After that, item 3 (pre-patch blast radius and edit preview) is
+   the next item on the build order.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 
