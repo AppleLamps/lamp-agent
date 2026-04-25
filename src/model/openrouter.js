@@ -1,0 +1,795 @@
+import { appendEvent } from "../log/event-log.js";
+
+const SYSTEM_PROMPT = `You are an AI coding agent operating inside a permissioned coding harness.
+
+The user communicates in plain English. Translate their request into technical work internally, but speak to them in product-level language.
+Do not claim you inspected files unless the project summary provides evidence.
+Prefer minimal, reversible changes.
+Ask only when crossing meaningful boundaries: dependencies, network, secrets, database schema, deletion, outside-workspace access, push, deploy, payments, or production data.
+Distinguish facts from guesses.
+Use tools to inspect or change files. Do not pretend to have read files.
+Prefer the code intelligence tools (find_symbols, find_definition, find_references, find_imports, find_exports, route_map) over raw text search when navigating real codebases.
+For edits, prefer the smallest targeted primitive that fits: replace_exact for unique snippets, replace_range when you know line numbers, insert_before/insert_after for additions next to a unique marker, create_file for new files, rename_file/delete_file for file moves and deletes. Fall back to apply_patch for multi-hunk diffs and write_file only when you have read enough context to safely rewrite the whole file.
+Final responses should summarize what changed, checks run, risks, and next choices.`;
+
+const TOOL_DEFINITIONS = [
+  {
+    type: "function",
+    function: {
+      name: "list_files",
+      description: "List workspace files under a path. Ignores common build and dependency directories.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Workspace-relative path to list.", default: "." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read a workspace file. Secret-like files require user approval.",
+      parameters: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string", description: "Workspace-relative file path." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_files",
+      description: "Search text across workspace files.",
+      parameters: {
+        type: "object",
+        required: ["query"],
+        properties: {
+          query: { type: "string" },
+          glob: { type: "string", description: "Optional substring filter for paths." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "apply_patch",
+      description: "Apply a unified diff patch with tracked snapshots for undo. Preferred for code edits.",
+      parameters: {
+        type: "object",
+        required: ["patch"],
+        properties: {
+          patch: { type: "string", description: "Unified diff text." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "write_file",
+      description: "Write a workspace file with snapshot tracking for undo. Use complete file content only when apply_patch is not practical.",
+      parameters: {
+        type: "object",
+        required: ["path", "content"],
+        properties: {
+          path: { type: "string" },
+          content: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_file",
+      description: "Create a new workspace file. Errors if the file already exists. Snapshots before write so undo can restore the missing-file state.",
+      parameters: {
+        type: "object",
+        required: ["path", "content"],
+        properties: {
+          path: { type: "string" },
+          content: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_file",
+      description: "Delete a workspace file. Snapshots first so undo can restore it. Always prompts the user for explicit approval.",
+      parameters: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "rename_file",
+      description: "Rename or move a tracked workspace file. Errors if the destination already exists.",
+      parameters: {
+        type: "object",
+        required: ["old_path", "new_path"],
+        properties: {
+          old_path: { type: "string" },
+          new_path: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "replace_range",
+      description: "Replace a 1-indexed inclusive line range in a file with new content. Prefer this over write_file for small edits when you know the line numbers.",
+      parameters: {
+        type: "object",
+        required: ["path", "start_line", "end_line", "content"],
+        properties: {
+          path: { type: "string" },
+          start_line: { type: "integer", description: "1-indexed first line to replace." },
+          end_line: { type: "integer", description: "1-indexed last line to replace, inclusive." },
+          content: { type: "string", description: "New text to insert in place of the range. Empty string deletes the range." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "replace_exact",
+      description: "Replace a single exact text snippet in a file with new text. Errors if the snippet appears zero or more than one times. Use a longer, unique snippet when ambiguous.",
+      parameters: {
+        type: "object",
+        required: ["path", "old_text", "new_text"],
+        properties: {
+          path: { type: "string" },
+          old_text: { type: "string" },
+          new_text: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "insert_before",
+      description: "Insert text immediately before a unique marker substring in a file. Errors if the marker is missing or non-unique.",
+      parameters: {
+        type: "object",
+        required: ["path", "marker", "content"],
+        properties: {
+          path: { type: "string" },
+          marker: { type: "string" },
+          content: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "insert_after",
+      description: "Insert text immediately after a unique marker substring in a file. Errors if the marker is missing or non-unique.",
+      parameters: {
+        type: "object",
+        required: ["path", "marker", "content"],
+        properties: {
+          path: { type: "string" },
+          marker: { type: "string" },
+          content: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_command",
+      description: "Run a local command after deterministic permission classification. Risky commands prompt or block.",
+      parameters: {
+        type: "object",
+        required: ["command", "purpose"],
+        properties: {
+          command: { type: "string" },
+          purpose: { type: "string", description: "Plain-English purpose for this command." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_available_checks",
+      description: "Run available package scripts among test, lint, typecheck, and build.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_tests",
+      description: "Run the package test script if defined.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_lint",
+      description: "Run the package lint script if defined.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_typecheck",
+      description: "Run the package typecheck script if defined.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_build",
+      description: "Run the package build script if defined.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_status",
+      description: "Show git status or tracked task changes when not in a git repo.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_diff",
+      description: "Show git diff when this workspace is a git repo.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_symbols",
+      description: "Search the code intelligence index for top-level symbols (functions, classes, interfaces, types, enums, variables) by substring of name. Optional kind filter narrows by symbol kind.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Case-insensitive substring of the symbol name. Empty matches all." },
+          kind: { type: "string", description: "Optional kind filter: function, class, interface, type, enum, variable." },
+          limit: { type: "integer", description: "Max matches to return. Default 50." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_definition",
+      description: "Find where a symbol is defined. Returns one or more locations when an exact name match exists in the indexed source.",
+      parameters: {
+        type: "object",
+        required: ["symbol"],
+        properties: {
+          symbol: { type: "string", description: "Exact symbol identifier." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_references",
+      description: "Find references to a symbol across indexed source files using identifier word-boundary scan. Excludes the definition site when known.",
+      parameters: {
+        type: "object",
+        required: ["symbol"],
+        properties: {
+          symbol: { type: "string", description: "Exact identifier to look up." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_imports",
+      description: "List the imports declared in a workspace file (ESM, CommonJS, dynamic import, Python from/import).",
+      parameters: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "find_exports",
+      description: "List the exports declared in a workspace file (ESM named/default, CommonJS, Python module-level).",
+      parameters: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "route_map",
+      description: "Detect HTTP routes in the workspace. Covers Express/Fastify/Koa-style app.METHOD calls, React Router <Route path>, and Next.js pages/ and app/ file routes.",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "detect_test_runner",
+      description: "Detect the test runner used in this workspace (Jest, Vitest, Node, Mocha, Playwright, pytest, etc.).",
+      parameters: { type: "object", properties: {} }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_test_file",
+      description: "Run a specific test file using the detected test runner instead of the full test suite.",
+      parameters: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string", description: "Workspace-relative path to the test file." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_test_name",
+      description: "Run a specific test by name or pattern using the detected test runner.",
+      parameters: {
+        type: "object",
+        required: ["name"],
+        properties: {
+          name: { type: "string", description: "Test name or pattern to filter by." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_related_tests",
+      description: "Find and run test files related to a changed source file.",
+      parameters: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string", description: "Workspace-relative path to the changed source file." }
+        }
+      }
+    }
+  }
+];
+
+export function createOpenRouterAdapter(modelConfig) {
+  return {
+    async respond({ userRequest, projectSummary, tools, activeTask, allowedTools = null, onProgress = () => {} }) {
+      const apiKey = process.env[modelConfig.apiKeyEnv];
+      if (!apiKey || !modelConfig.allowNetwork) {
+        return localHarnessResponse(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
+      }
+
+      try {
+        const messages = [
+          { role: "system", content: SYSTEM_PROMPT },
+          {
+            role: "user",
+            content: [
+              `User request: ${userRequest}`,
+              "",
+              "Initial project summary:",
+              JSON.stringify(projectSummary, null, 2),
+              "",
+              "Persisted project memory:",
+              JSON.stringify(projectSummary.memory || null, null, 2)
+            ].join("\n")
+          }
+        ];
+
+        for (let step = 0; step < 8; step += 1) {
+          const body = await callOpenRouter(apiKey, modelConfig, messages, { allowedTools });
+          const message = body.choices?.[0]?.message;
+          if (!message) {
+            return {
+              message: "The model provider returned no message. I stopped before making further changes.",
+              taskPatch: { current_plan: inferPlan(userRequest, projectSummary) }
+            };
+          }
+
+          messages.push(message);
+          const toolCalls = message.tool_calls || [];
+          if (!toolCalls.length) {
+            return {
+              message: message.content || "Done.",
+              taskPatch: { current_plan: inferPlan(userRequest, projectSummary) }
+            };
+          }
+
+          for (const toolCall of toolCalls) {
+            const name = toolCall.function?.name;
+            const args = parseToolArgs(toolCall.function?.arguments);
+            onProgress(`Using tool: ${name}`);
+            await logToolEvent(activeTask, name, args, "started");
+            const result = await executeTool(name, args, { tools, activeTask, allowedTools });
+            await logToolEvent(activeTask, name, args, "completed", result);
+            messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              name,
+              content: JSON.stringify(trimToolResult(result))
+            });
+          }
+        }
+
+        return {
+          message: "I reached the tool-iteration limit before the model produced a final answer. Review the task artifacts for partial progress.",
+          taskPatch: {
+            current_plan: inferPlan(userRequest, projectSummary),
+            assumptions: ["The model reached the maximum tool-call loop limit."]
+          }
+        };
+      } catch (error) {
+        return {
+          message: `The model call failed: ${error.message}. I inspected the workspace locally instead.\n\n${formatLocalSummary(projectSummary)}`,
+          taskPatch: {}
+        };
+      }
+    },
+
+    async critique(context) {
+      const apiKey = process.env[modelConfig.apiKeyEnv];
+      if (!apiKey || !modelConfig.allowNetwork) {
+        return {
+          ok: false,
+          message: apiKey && !modelConfig.allowNetwork
+            ? "Model critique skipped because network model calls are disabled."
+            : "Model critique skipped because OpenRouter is not configured."
+        };
+      }
+
+      try {
+        const body = await callOpenRouter(apiKey, modelConfig, [
+          {
+            role: "system",
+            content: [
+              "You are a senior code reviewer critiquing an AI coding harness task before final review.",
+              "Focus on likely bugs, unrelated behavior changes, weak assumptions, and missing verification.",
+              "Be concise and plain-English. Do not invent facts beyond the provided context."
+            ].join("\n")
+          },
+          {
+            role: "user",
+            content: JSON.stringify(context, null, 2)
+          }
+        ], { tools: false });
+
+        return {
+          ok: true,
+          message: body.choices?.[0]?.message?.content || "Model critique completed with no comments."
+        };
+      } catch (error) {
+        return { ok: false, message: `Model critique failed: ${error.message}` };
+      }
+    },
+
+    async repair({ activeTask, tools, userRequest, projectSummary, failedChecks, attempt, maxAttempts, allowedTools = null }) {
+      const apiKey = process.env[modelConfig.apiKeyEnv];
+      if (!apiKey || !modelConfig.allowNetwork) {
+        return {
+          ok: false,
+          noop: true,
+          message: apiKey && !modelConfig.allowNetwork
+            ? "Repair skipped because network model calls are disabled."
+            : "Repair skipped because OpenRouter is not configured."
+        };
+      }
+
+      try {
+        const messages = [
+          {
+            role: "system",
+            content: [
+              SYSTEM_PROMPT,
+              "",
+              "You are now in a bounded repair attempt.",
+              "Use tools to inspect the failure and make the smallest patch likely to fix it.",
+              "Do not broaden scope. Stop with a concise summary when done."
+            ].join("\n")
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              user_request: userRequest,
+              project_summary: projectSummary,
+              attempt,
+              max_attempts: maxAttempts,
+              failed_checks: failedChecks
+            }, null, 2)
+          }
+        ];
+
+        for (let step = 0; step < 6; step += 1) {
+          const body = await callOpenRouter(apiKey, modelConfig, messages, { allowedTools });
+          const message = body.choices?.[0]?.message;
+          if (!message) return { ok: false, message: "Repair model returned no message." };
+          messages.push(message);
+          const toolCalls = message.tool_calls || [];
+          if (!toolCalls.length) {
+            return { ok: true, message: message.content || "Repair attempt completed." };
+          }
+          for (const toolCall of toolCalls) {
+            const name = toolCall.function?.name;
+            const args = parseToolArgs(toolCall.function?.arguments);
+            await logToolEvent(activeTask, name, args, "repair_started");
+            const result = await executeTool(name, args, { tools, activeTask, allowedTools });
+            await logToolEvent(activeTask, name, args, "repair_completed", result);
+            messages.push({
+              role: "tool",
+              tool_call_id: toolCall.id,
+              name,
+              content: JSON.stringify(trimToolResult(result))
+            });
+          }
+        }
+
+        return { ok: false, message: "Repair attempt reached the tool-iteration limit." };
+      } catch (error) {
+        return { ok: false, message: `Repair failed: ${error.message}` };
+      }
+    }
+  };
+}
+
+async function logToolEvent(activeTask, tool, args, status, result = null) {
+  if (!activeTask?.dir) return;
+  await appendEvent(activeTask.dir, {
+    type: "tool_call",
+    tool,
+    status,
+    args: redactArgs(args),
+    result: result ? summarizeToolResult(result) : undefined
+  });
+}
+
+function redactArgs(args) {
+  if (!args) return {};
+  const redacted = { ...args };
+  if (typeof redacted.content === "string" && redacted.content.length > 200) {
+    redacted.content = `[${redacted.content.length} chars]`;
+  }
+  return redacted;
+}
+
+function summarizeToolResult(result) {
+  return {
+    ok: result.ok,
+    skipped: result.skipped,
+    blocked: result.blocked,
+    message: result.message,
+    decision: result.decision
+  };
+}
+
+async function callOpenRouter(apiKey, modelConfig, messages, options = { tools: true }) {
+  const body = {
+    model: modelConfig.model,
+    messages
+  };
+  if (options.tools !== false) {
+    body.tools = filterToolDefinitions(options.allowedTools);
+    body.tool_choice = "auto";
+  }
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "http://localhost",
+      "X-Title": "Plain-English AI Coding Harness"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new Error(`OpenRouter returned ${response.status}`);
+  }
+  return response.json();
+}
+
+async function executeTool(name, args, { tools, activeTask, allowedTools = null }) {
+  if (allowedTools && !allowedTools.includes(name)) {
+    return { ok: false, blocked: true, message: `Tool ${name} is not allowed in the current phase.` };
+  }
+  switch (name) {
+    case "list_files":
+      return tools.listFiles(args.path || ".");
+    case "read_file":
+      return tools.readFile(args.path);
+    case "search_files":
+      return tools.searchFiles(args.query, args.glob);
+    case "apply_patch":
+      return tools.applyPatchTracked(activeTask, args.patch);
+    case "write_file":
+      return tools.writeFileTracked(activeTask, args.path, args.content);
+    case "create_file":
+      return tools.createFileTracked(activeTask, args.path, args.content);
+    case "delete_file":
+      return tools.deleteFileTracked(activeTask, args.path);
+    case "rename_file":
+      return tools.renameFileTracked(activeTask, args.old_path, args.new_path);
+    case "replace_range":
+      return tools.replaceRangeTracked(activeTask, args.path, args.start_line, args.end_line, args.content);
+    case "replace_exact":
+      return tools.replaceExactTracked(activeTask, args.path, args.old_text, args.new_text);
+    case "insert_before":
+      return tools.insertBeforeTracked(activeTask, args.path, args.marker, args.content);
+    case "insert_after":
+      return tools.insertAfterTracked(activeTask, args.path, args.marker, args.content);
+    case "run_command":
+      return tools.runCommand(args.command, args.purpose, activeTask);
+    case "run_available_checks":
+      return tools.runAvailableChecks(activeTask);
+    case "run_tests":
+      return tools.runTests(activeTask);
+    case "run_lint":
+      return tools.runLint(activeTask);
+    case "run_typecheck":
+      return tools.runTypecheck(activeTask);
+    case "run_build":
+      return tools.runBuild(activeTask);
+    case "git_status":
+      return tools.gitStatus();
+    case "git_diff":
+      return tools.gitDiff();
+    case "find_symbols":
+      return tools.findSymbols(args.query || "", { kind: args.kind, limit: args.limit });
+    case "find_definition":
+      return tools.findDefinition(args.symbol);
+    case "find_references":
+      return tools.findReferences(args.symbol);
+    case "find_imports":
+      return tools.findImports(args.path);
+    case "find_exports":
+      return tools.findExports(args.path);
+    case "route_map":
+      return tools.routeMap();
+    case "detect_test_runner":
+      return tools.detectTestRunner();
+    case "run_test_file":
+      return tools.runTestFile(args.path, activeTask);
+    case "run_test_name":
+      return tools.runTestName(args.name, activeTask);
+    case "run_related_tests":
+      return tools.runRelatedTests(args.path, activeTask);
+    default:
+      return { ok: false, message: `Unknown tool: ${name}` };
+  }
+}
+
+function filterToolDefinitions(allowedTools) {
+  if (!allowedTools) return TOOL_DEFINITIONS;
+  const allowed = new Set(allowedTools);
+  return TOOL_DEFINITIONS.filter((tool) => allowed.has(tool.function.name));
+}
+
+function parseToolArgs(raw) {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+function trimToolResult(result) {
+  const json = JSON.stringify(result);
+  if (json.length <= 12000) return result;
+  return {
+    ok: result.ok,
+    truncated: true,
+    preview: json.slice(0, 12000)
+  };
+}
+
+function localHarnessResponse(userRequest, projectSummary, apiKey, allowNetwork) {
+  const modelNote = apiKey && !allowNetwork
+    ? "OpenRouter is configured, but network model calls are disabled in `.agent/config.json`."
+    : "No OpenRouter API key is configured, so I used the local harness summary.";
+
+  return {
+    message: [
+      modelNote,
+      "",
+      formatLocalSummary(projectSummary),
+      "",
+      `For this request, the next implementation step is: ${nextStep(userRequest, projectSummary)}`
+    ].join("\n"),
+    taskPatch: {
+      current_plan: inferPlan(userRequest, projectSummary),
+      assumptions: apiKey && !allowNetwork
+        ? ["Network model calls are disabled by configuration."]
+        : ["No model-backed implementation was attempted because OpenRouter is not enabled."]
+    }
+  };
+}
+
+function formatLocalSummary(projectSummary) {
+  const lines = [
+    `I found ${projectSummary.fileCount} file(s) in the workspace.`,
+    projectSummary.memory?.framework
+      ? `Remembered framework: ${projectSummary.memory.framework}.`
+      : null,
+    projectSummary.packageManager
+      ? `Package manager: ${projectSummary.packageManager}.`
+      : "No package manager was detected.",
+    projectSummary.testRunner
+      ? `Test runner: ${projectSummary.testRunner}.`
+      : null,
+    projectSummary.scripts.length
+      ? `Available package scripts: ${projectSummary.scripts.join(", ")}.`
+      : "No package scripts were found.",
+    projectSummary.git
+  ];
+  if (projectSummary.notableFiles.length) {
+    lines.push(`Notable files: ${projectSummary.notableFiles.join(", ")}.`);
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
+function nextStep(userRequest, projectSummary) {
+  if (projectSummary.fileCount <= 3) {
+    return "continue building the harness foundation before asking it to modify another project.";
+  }
+  if (/\b(explain|where|what|why|how)\b/i.test(userRequest)) {
+    return "read the relevant files and answer from evidence.";
+  }
+  return "inspect likely implementation files, create a short plan, then make reversible local edits.";
+}
+
+function inferPlan(userRequest, projectSummary) {
+  const plan = ["Inspect relevant project files"];
+  if (!/\b(explain|where|what|why|how)\b/i.test(userRequest)) {
+    plan.push("Make minimal reversible changes");
+    if (projectSummary.scripts.length) plan.push("Run available local checks");
+    plan.push("Summarize changed files and risks");
+  } else {
+    plan.push("Separate confirmed facts from assumptions");
+    plan.push("Answer in plain English");
+  }
+  return plan;
+}

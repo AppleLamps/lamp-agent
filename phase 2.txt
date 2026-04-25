@@ -1,0 +1,528 @@
+# Phase 2 Plan: Make The Agent More Capable
+
+## Handoff Summary
+
+This file is the roadmap for making the agent more capable after the safe MVP.
+
+Current status:
+
+- [x] Core MVP is implemented.
+- [x] Shadow workspace execution, apply-back, and conflict detection exist.
+- [x] Styled CLI with interactive menus exists.
+- [x] Structured check results exist.
+- [x] Bounded verify-and-repair loop (item 1) is complete.
+- [~] Error parsers are useful but still broad/foundational.
+- [x] Targeted check runner (item 2) is complete.
+- [x] Safer edit primitives (item 3) are complete.
+- [x] Code intelligence tools (item 4) are complete (lightweight static-analysis MVP).
+- [x] Project-level memory (item 5) is complete.
+- [x] Explicit phase controller (item 6) is complete.
+- [x] Apply-back conflict resolution (item 7) is complete.
+
+Where we left off:
+
+- The last completed work added **Apply-Back Conflict Resolution** in
+  `src/workspace/shadow-workspace.js`:
+  - Existing conflict detection still blocks automatic apply-back when real workspace
+    files changed while a shadow task was running.
+  - Conflict summaries now show real and shadow file metadata/previews.
+  - Each conflicted file can be resolved by keeping the real workspace version, applying
+    the shadow version, or saving the shadow version under `.agent/conflicts`.
+  - Clean changed files are applied while conflicted files follow their explicit choices.
+  - Resolution artifacts are written to `apply-back-resolution.json` and `apply-back.json`.
+  - Interactive accept flow now offers per-file conflict choices; noninteractive flow stays
+    blocked and prints clear next-step text.
+- Test suite is at 87 tests, all passing (5 new apply-back conflict tests in
+  `test/shadow-workspace.test.js`).
+- The next AI should continue with **Better Approval And Review Actions** (item 8 in the
+  build order) unless the user redirects.
+
+Useful verification command:
+
+```sh
+npm test
+```
+
+## Current Baseline
+
+The harness now has the core safe coding-agent loop:
+
+- CLI chat shell with styled output and interactive menus.
+- Task state under `.agent/tasks`.
+- Event, command, review, belief, checkpoint, and apply-back artifacts.
+- File listing, reading, search, patch, write, command, and check tools.
+- Permission boundaries for risky operations.
+- Tracked undo.
+- Shadow workspace execution with apply-back and conflict detection.
+- OpenRouter tool-calling adapter.
+- Final review card and critique pass.
+- Structured check parsing and bounded repair loop.
+- Targeted check runner with package-manager-aware command generation.
+- Project-level memory with stale-source refresh and model-context integration.
+- Explicit phase controller with per-task `phases.json`, phase events, artifact gates,
+  and model tool filtering by phase.
+- Apply-back conflict resolution with per-file keep/apply/save choices and conflict
+  artifacts.
+
+Phase 2 should focus on agent capability: helping the model find the right code, understand failures, iterate safely, and deliver working changes more often.
+
+---
+
+## 1. Error-Aware Verification And Repair Loop
+
+Status: complete.
+
+### Goal
+
+When a check fails, the harness should turn raw output into structured failure data and let the agent repair it in a bounded loop.
+
+### Add
+
+- [x] `check-results.json` per task.
+- [x] Structured check result model:
+  - command
+  - check type
+  - status
+  - exit code
+  - failed files
+  - failed test names
+  - stack traces
+  - expected vs actual, when detectable
+  - likely relevant files
+  - raw output path
+- [x] Raw stdout/stderr files under each task's `checks/` directory.
+- [~] Parsers:
+  - [x] `parse_test_failure` foundation
+  - [x] `parse_typecheck_errors` foundation
+  - [x] `parse_lint_errors` foundation
+  - [~] `parse_build_errors`
+- [x] Repair loop foundation:
+  - [x] patch
+  - [x] run check
+  - [x] parse failure
+  - [x] feed structured failure back to model
+  - [x] patch again
+  - [x] stop after 3 attempts
+- [x] Events:
+  - [x] `verify_started`
+  - [x] `check_failed`
+  - [x] `repair_attempt_started`
+  - [x] `repair_attempt_finished`
+  - [x] `repair_limit_reached`
+
+### Definition Of Done
+
+The user can say:
+
+```txt
+Fix the failing test
+```
+
+The agent should run the test, parse the failure, patch, rerun, and either pass or clearly explain the blocker.
+
+---
+
+## 2. Targeted Check Runner
+
+Status: complete. Reviewed and hardened.
+
+### Goal
+
+Avoid running only broad package scripts. Let the agent run focused checks when it knows the affected file or test.
+
+### Add
+
+- [x] `detect_test_runner` — detects Jest, Vitest, Mocha, Playwright, Cypress, Node built-in, pytest, Cargo, Go
+- [x] `run_test_file(path)` — runs a specific test file using the detected runner
+- [x] `run_test_name(name)` — runs a test by name pattern using the detected runner
+- [x] `run_related_tests(changed_file)` — finds co-located test files and runs them
+- [x] `run_typecheck` basic package-script wrapper
+- [x] `run_lint` basic package-script wrapper
+- [x] `run_build` basic package-script wrapper
+
+Runner detection covers: Vitest, Jest, Playwright, Cypress, Mocha, Node built-in test runner, pytest, Cargo, Go.
+
+Related-test discovery uses co-location conventions: `.test.js`, `.spec.ts`, `test/<name>.test.js`, `__tests__/`, etc.
+
+The repair loop now prefers targeted test runs when it knows which files failed.
+
+Model tools exposed: `detect_test_runner`, `run_test_file`, `run_test_name`, `run_related_tests`.
+
+### Hardening fixes applied
+
+- `LOCAL_CHECK_RE` in `src/permissions/permission-engine.js` expanded to cover all targeted
+  runner command forms (`npx jest`, `pnpm exec vitest`, `yarn mocha`, `bunx jest`,
+  `python -m pytest`, `cargo test`, `go test`). Without this, every targeted run prompted
+  for approval regardless of `allowLocalChecks`.
+- `detectTestRunner` now reads lock files and emits the correct package-manager-aware exec
+  prefix (`npx`, `pnpm exec`, `yarn`, `bunx`). Returned descriptor now includes `packageManager`.
+
+### Definition Of Done
+
+If a patch only touches `src/foo.test.ts`, the agent can run that test file instead of the full suite when supported.
+
+---
+
+## 3. Code Intelligence Tools
+
+Status: complete (lightweight MVP).
+
+### Goal
+
+Help the agent navigate real codebases without relying only on text search.
+
+### Add
+
+- [x] `find_symbols(query)`
+- [x] `find_definition(symbol_or_identifier)`
+- [x] `find_references(symbol_or_identifier)`
+- [x] `find_imports(path)`
+- [x] `find_exports(path)`
+- [~] `dependency_graph(path?)` — implicit via `find_imports`; no aggregated tool yet
+- [x] `route_map()`
+- [ ] `component_map()` — not built; React component discovery still falls back to symbol/text search
+
+### MVP Approach
+
+Implemented with regex-based parsers, no new dependencies:
+
+- TypeScript/JavaScript: ESM imports/exports, CommonJS `require` and `module.exports`,
+  function/class/interface/type/enum/variable detection. Routes covered:
+  Express/Fastify/Koa/Hono, React Router, Next.js `pages/` and `app/` file routes.
+- Python: `def`/`class` symbols and `import` / `from x import y` statements.
+- Index lives in `src/code/code-index.js`, cached per runtime, invalidated on edits.
+
+Language-server integration can come later.
+
+### Definition Of Done
+
+The agent can answer:
+
+```txt
+Where is the dashboard route rendered?
+Who calls updateUser?
+Which tests mention login redirect?
+```
+
+using structured evidence.
+
+---
+
+## 4. Safer Edit Primitives
+
+Status: complete.
+
+### Goal
+
+Reduce fragile full-file rewrites and make model edits more reliable.
+
+### Add
+
+- [x] `replace_range(path, start_line, end_line, content)`
+- [x] `insert_before(path, marker, content)`
+- [x] `insert_after(path, marker, content)`
+- [x] `replace_exact(path, old_text, new_text)`
+- [x] `rename_file(old_path, new_path)`
+- [x] `delete_file(path)` with stronger permission checks
+- [x] `create_file(path, content)` distinct from write
+
+All edit tools must:
+
+- [x] snapshot before mutation
+- [x] update changed-files
+- [x] classify path permissions
+- [x] log events
+- [x] return precise errors when context does not match
+
+### Definition Of Done
+
+The model can make small edits without reconstructing full files.
+
+---
+
+## 5. Project Memory
+
+Status: complete.
+
+### Goal
+
+Persist stable project knowledge across tasks.
+
+### Add
+
+`.agent/memory/project.json`
+
+Implemented fields:
+
+```json
+{
+  "version": 1,
+  "framework": null,
+  "package_manager": null,
+  "test_runner": null,
+  "scripts": {},
+  "routes": [],
+  "important_files": [],
+  "conventions": [],
+  "decisions": [],
+  "avoid_touching": [],
+  "source_fingerprints": {},
+  "updated_at": null
+}
+```
+
+### Behaviors
+
+- [x] Update memory after project scan.
+- [x] Reuse memory during triage.
+- [x] Distinguish stable facts from stale guesses through derived fields and durable notes.
+- [x] Refresh memory when package/config or route-likely files change.
+- [x] Preserve `decisions` and `avoid_touching` across refresh.
+- [x] Pass persisted memory into project summary and model/local fallback context.
+
+### Definition Of Done
+
+The second task in the same project should need less rediscovery than the first.
+
+---
+
+## 6. Explicit Phase Controller
+
+Status: complete.
+
+### Goal
+
+Make task phases enforce required artifacts instead of relying on the model to behave.
+
+### Add
+
+- [x] Phase controller for:
+
+1. Intake
+2. Triage
+3. Plan
+4. Patch
+5. Verify
+6. Critique
+7. Final Review
+
+Each phase should define:
+
+- [x] allowed tools
+- [x] required outputs
+- [x] task status
+- [x] events to write
+- [x] failure behavior
+
+### Example Requirements
+
+Before Patch:
+
+- [x] at least one relevant file inspected, unless task is docs/setup/explain
+- [x] short plan recorded
+- [x] risky boundaries identified
+
+Before Final Review:
+
+- [x] diff available
+- [~] changed files recorded through existing `changed-files.json` edit tracking
+- [x] checks run or skipped with reason through verify/final-review check flow
+- [x] critique complete
+
+### Definition Of Done
+
+The harness can stop a task from jumping straight from user request to final answer without evidence.
+
+---
+
+## 7. Better Approval And Review Actions
+
+Status: partially implemented.
+
+Already implemented:
+
+- [x] interactive approval menu
+- [x] interactive post-review action menu
+- [x] typed fallback commands
+
+Still pending:
+
+### Goal
+
+Make approvals and post-review actions more product-like.
+
+### Add
+
+Approval choices:
+
+- [x] Allow once / allow for this task
+- [x] Deny
+- [x] Explain why needed
+- [ ] Choose another approach
+- [ ] Cancel task
+
+Review actions:
+
+- [x] Accept
+- [x] Adjust
+- [x] Undo
+- [x] See diff
+- [ ] See technical details
+- [ ] Open changed file list
+- [x] Resolve apply-back conflict
+
+### Definition Of Done
+
+Users can handle common decisions without typing special commands.
+
+---
+
+## 8. Apply-Back Conflict Resolution
+
+Status: complete.
+
+### Goal
+
+When shadow apply-back detects a conflict, the user should have clear choices.
+
+### Add
+
+For each conflicted file:
+
+- [x] keep real workspace version
+- [x] apply shadow version
+- [x] show both summaries
+- [x] save shadow version as `.agent/conflicts/...`
+- [x] cancel/block apply-back automatically on conflict
+
+### Safety Rule
+
+Never overwrite a real-workspace conflict without explicit user choice.
+
+### Definition Of Done
+
+If the user edits a file while the agent works in shadow, the harness blocks auto-apply and offers clear next steps.
+
+---
+
+## 9. Model Adapter Improvements
+
+Status: partially implemented.
+
+Already implemented:
+
+- [x] OpenRouter adapter
+- [x] tool calling
+- [x] critique method
+- [x] repair method
+
+Still pending:
+
+### Goal
+
+Make model usage more robust and provider-agnostic.
+
+### Add
+
+- [ ] explicit model adapter interface
+- [ ] structured output support where available
+- [ ] streaming responses
+- [ ] fallback model configuration
+- [ ] usage/cost tracking
+- [ ] retry behavior for transient provider failures
+- [ ] provider capability flags:
+  - tool calling
+  - JSON mode
+  - streaming
+  - max context
+
+### Definition Of Done
+
+The harness can swap model providers without rewriting task logic.
+
+---
+
+## 10. Better Diff And Review UX
+
+Status: partially implemented.
+
+Already implemented:
+
+- [x] boxed final review card
+- [x] changed files
+- [x] checks
+- [x] warnings
+- [x] next actions
+- [x] basic snapshot diff summary
+
+Still pending:
+
+### Goal
+
+Make review useful for nontechnical users and detailed enough for developers.
+
+### Add
+
+- [ ] richer summarized diff grouped by file
+- [x] basic technical diff command/view via `/diff`
+- [ ] blast radius summary
+- [ ] changed file reasons
+- [ ] warnings grouped by severity
+- [ ] check output snippets
+- [ ] task timeline
+
+### Definition Of Done
+
+The final review should answer:
+
+- What changed?
+- Why did it change?
+- What was verified?
+- What might still be risky?
+- What can I do next?
+
+---
+
+## Recommended Build Order
+
+1. ~~Error-aware verification and repair loop.~~ **Done.**
+2. ~~Targeted check runner.~~ **Done. Reviewed and hardened.**
+3. ~~Safer edit primitives.~~ **Done.**
+4. ~~Code intelligence tools.~~ **Done (lightweight MVP).**
+5. ~~Project memory.~~ **Done.**
+6. ~~Explicit phase controller.~~ **Done.**
+7. ~~Apply-back conflict resolution.~~ **Done.**
+8. Better approval/review actions. ← **Next.**
+9. Model adapter improvements.
+10. Better diff and review UX.
+
+---
+
+## Phase 2 Definition Of Done
+
+Phase 2 is done when the user can open a real existing repo and say:
+
+```txt
+Fix the failing login test
+```
+
+The agent should:
+
+- [x] inspect the project
+- [x] identify the test runner
+- [x] run a targeted failing test when possible
+- [x] parse the failure into structured data
+- [x] find relevant source files (text search + code intelligence index)
+- [x] patch safely in shadow workspace
+- [x] rerun the relevant check
+- [x] retry up to a bounded limit
+- [x] critique the patch
+- [x] show a clear review card
+- [x] apply back only after accept
+- [x] avoid overwriting real user edits
+- [x] preserve artifacts for undo, review, and debugging
+
+Remaining gaps before Phase 2 is fully done:
+
+- Better approval/review actions (item 7): `Choose another approach` and `Cancel task` not yet wired.
+- Better diff/review UX (item 10): diff is technical only; no blast radius or grouped file reasons.

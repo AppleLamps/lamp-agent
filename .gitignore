@@ -1,0 +1,13 @@
+.agent/
+node_modules/
+coverage/
+dist/
+build/
+.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
+.env
+.env.*

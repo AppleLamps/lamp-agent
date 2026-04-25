@@ -1,0 +1,1814 @@
+Below is a build guide you can give directly to the AI helping you implement the project.
+
+---
+
+# Project Build Guide: Plain-English AI Coding Harness
+
+## Implementation Progress
+
+Updated as implementation work lands.
+
+Completed:
+
+- [x] CLI chat interface.
+- [x] Config loading.
+- [x] OpenRouter adapter with tool-calling loop.
+- [x] Task state files and event logging.
+- [x] File listing, reading, and search tools.
+- [x] Permission engine with safe local defaults and risky-boundary approvals.
+- [x] Patch application through a unified-diff `apply_patch` tool.
+- [x] Formal task-start checkpoint metadata.
+- [x] Tracked file snapshots and undo for changed files.
+- [x] Non-git diff summaries from task snapshots.
+- [x] Command runner with classification and `commands.jsonl` audit logging.
+- [x] Test/lint/typecheck/build script detection and check runner.
+- [x] Basic final review summary.
+- [x] Post-patch critique pass with `review.md` output.
+- [x] Richer final review card with warnings and next actions.
+- [x] Active belief ledger updates for facts, assumptions, decisions, evidence, and risks.
+- [x] Dedicated `run_tests`, `run_lint`, `run_typecheck`, and `run_build` tools.
+- [x] Opt-in shadow workspace foundation using git worktree or filtered temporary copy.
+- [x] Polished CLI shell with styled banner, prompt, progress lines, boxed assistant responses, review cards, `/diff`, and review actions.
+- [x] Interactive selectable approval and review menus with typed-command fallback.
+- [x] Full shadow workspace apply-back flow for tracked changes after review.
+- [x] Shadow apply-back conflict detection for files changed in the real workspace while a task is running.
+
+Remaining:
+
+- [ ] Add conflict resolution choices after an apply-back conflict.
+
+## 0. Product Goal
+
+We are building a plain-English AI coding assistant.
+
+The user should be able to describe what they want in normal language:
+
+“Fix the login bug.”
+
+“Make the dashboard look better.”
+
+“Add a profile page.”
+
+“Why is this test failing?”
+
+The system should behave like a cautious senior engineer working inside a reversible sandbox.
+
+The user should not need to write bash commands, understand git internals, approve every small file edit, or manage technical workflow manually.
+
+The product should feel simple. The internal system should be structured, stateful, permission-aware, and reversible.
+
+This is not just a chatbot that can call tools. The central idea is to build a disciplined coding harness around the AI.
+
+---
+
+# 1. Core Principles
+
+## 1.1 Plain English first
+
+The user interface should be chat-first.
+
+The user gives product-level instructions.
+
+The assistant should ask product-level questions, not low-level technical questions.
+
+Bad:
+
+“Should I modify `auth/callback.ts` or `middleware/session.ts`?”
+
+Good:
+
+“After login, should users return to the page they came from, or always go to the dashboard?”
+
+Bad:
+
+“Allow `npm install zod`?”
+
+Better:
+
+“This adds the `zod` validation library and updates your dependency files. Allow dependency changes for this task?”
+
+## 1.2 Hidden structure
+
+Internally, every task should be converted into structured state.
+
+The AI should not rely on raw chat memory. Important information should be stored as artifacts.
+
+Examples:
+
+Goal.
+
+Constraints.
+
+Assumptions.
+
+Hypotheses.
+
+Evidence.
+
+Changed files.
+
+Commands run.
+
+Test results.
+
+Open questions.
+
+Definition of done.
+
+Final summary.
+
+## 1.3 Move fast where rollback is easy
+
+The agent should not ask for approval before every small action.
+
+It should freely do safe local work inside the project sandbox:
+
+Read files.
+
+Search files.
+
+Edit project files.
+
+Create source files.
+
+Run tests.
+
+Run typecheck.
+
+Run formatters.
+
+Build the app.
+
+It should ask only when crossing meaningful risk boundaries:
+
+Installing packages.
+
+Using network.
+
+Reading secrets.
+
+Changing database schema.
+
+Deleting many files.
+
+Accessing files outside the project.
+
+Pushing to remote.
+
+Deploying.
+
+Touching production data.
+
+Handling payments or external users.
+
+## 1.4 Ask at boundaries, not steps
+
+Do not ask:
+
+“Can I edit this file?”
+
+“Can I run this test?”
+
+“Can I format this file?”
+
+Instead ask once per meaningful category:
+
+“I’ll make local code changes and run checks in a safe workspace. I won’t install packages, read secrets, push, deploy, or touch files outside the project without asking.”
+
+## 1.5 Reversibility is the safety model
+
+The product should rely on checkpoints and undo, not approval spam.
+
+Every task should have a checkpoint.
+
+Every final change should be reviewable.
+
+The user should always be able to say:
+
+“Undo that.”
+
+“Go back before the dependency change.”
+
+“Keep the test but undo the implementation.”
+
+“Show me what changed.”
+
+## 1.6 The harness enforces safety, not the model
+
+The model can explain why it wants to do something.
+
+The harness decides whether it is allowed.
+
+Do not let the AI itself be the only safety system.
+
+Tool calls should be classified deterministically by the harness.
+
+---
+
+# 2. Target User Experience
+
+## 2.1 Default UX
+
+The user opens the app or CLI and types:
+
+“Add a settings page where users can update their name and avatar.”
+
+The assistant responds:
+
+“I found the existing user account code. I’ll add a settings page, reuse your current form components, connect it to the user update endpoint, and run the normal checks.”
+
+The system works in a safe workspace.
+
+If no risky boundary is crossed, it does not interrupt.
+
+When done, it shows:
+
+“Done. I added the settings page, connected the save action, added validation, and updated navigation. I changed 5 files. Tests passed. You can review, adjust, or undo.”
+
+Options:
+
+Review changes.
+
+Accept.
+
+Adjust.
+
+Undo.
+
+Explain.
+
+See technical details.
+
+## 2.2 Permission UX
+
+The assistant should use plain English approvals.
+
+Example dependency approval:
+
+“This task needs a new validation library. I recommend adding `zod`. This will update your package file and lockfile. Allow dependency changes for this task?”
+
+Buttons:
+
+Allow for this task.
+
+Choose another approach.
+
+Cancel.
+
+Example secrets approval:
+
+“This may require reading environment variables. I will not reveal secret values in chat. Allow access to `.env` for this task?”
+
+Buttons:
+
+Allow once.
+
+Deny.
+
+Explain why needed.
+
+Example deploy approval:
+
+“This would publish changes outside your local project. Deploying can affect real users. Allow deployment?”
+
+Buttons:
+
+Deploy.
+
+Do not deploy.
+
+Show me the commands first.
+
+---
+
+# 3. High-Level Architecture
+
+Build the system as these modules:
+
+1. Chat Interface
+2. Task Manager
+3. Project Scanner
+4. Tool Runtime
+5. Permission Engine
+6. Workspace Manager
+7. Patch Engine
+8. Check Runner
+9. Review Engine
+10. Model Adapter
+11. Event Log
+12. Final Review UI
+
+The first version can be CLI-based with a chat loop. Later it can become a desktop app, web app, VS Code extension, or local web UI.
+
+---
+
+# 4. Data Model
+
+Create a hidden project folder:
+
+```txt
+.agent/
+  tasks/
+  checkpoints/
+  patches/
+  logs/
+  memory/
+  config.json
+```
+
+Each task gets its own directory:
+
+```txt
+.agent/tasks/task-YYYYMMDD-HHMMSS/
+  task.json
+  beliefs.json
+  events.jsonl
+  commands.jsonl
+  changed-files.json
+  final-summary.md
+  review.md
+```
+
+## 4.1 `task.json`
+
+This is the core structured task state.
+
+```json
+{
+  "id": "task-20260424-153000",
+  "user_request": "Add a settings page where users can update their name and avatar.",
+  "task_type": "build",
+  "status": "triage",
+  "goal": "Add a user settings page for updating name and avatar.",
+  "constraints": [],
+  "assumptions": [],
+  "definition_of_done": [
+    "Settings page exists",
+    "User can update name",
+    "Avatar behavior is implemented or clearly handled",
+    "Navigation links to settings page",
+    "Relevant checks pass"
+  ],
+  "open_questions": [],
+  "current_plan": [],
+  "changed_files": [],
+  "risk_level": "normal",
+  "created_at": "",
+  "updated_at": ""
+}
+```
+
+## 4.2 `beliefs.json`
+
+This tracks facts, guesses, and decisions.
+
+Keep this simple in MVP.
+
+```json
+{
+  "claims": [
+    {
+      "id": "claim-1",
+      "text": "The app already has a user update API.",
+      "type": "hypothesis",
+      "confidence": 0.7,
+      "status": "unverified",
+      "evidence": [],
+      "created_at": ""
+    }
+  ],
+  "decisions": [
+    {
+      "id": "decision-1",
+      "text": "Use existing form components instead of adding a new UI library.",
+      "reason": "Avoid unnecessary dependency changes.",
+      "created_at": ""
+    }
+  ]
+}
+```
+
+Claim types:
+
+`fact`
+
+`hypothesis`
+
+`assumption`
+
+`constraint`
+
+`decision`
+
+`risk`
+
+Claim status:
+
+`unverified`
+
+`supported`
+
+`confirmed`
+
+`rejected`
+
+## 4.3 `events.jsonl`
+
+Every meaningful action should be logged.
+
+```json
+{"type":"task_created","message":"User requested settings page","timestamp":""}
+{"type":"tool_call","tool":"search_files","args":{"query":"user settings"},"timestamp":""}
+{"type":"file_changed","path":"src/pages/settings.tsx","timestamp":""}
+{"type":"check_result","command":"npm test","status":"passed","timestamp":""}
+```
+
+This lets the user or model reconstruct what happened.
+
+---
+
+# 5. Permission System
+
+Implement permission tiers early. This is critical.
+
+## 5.1 Tier 0: Always allowed
+
+These should not require user approval.
+
+Allowed:
+
+Read files inside workspace, except secrets.
+
+List directories.
+
+Search files.
+
+Read package/config files.
+
+Inspect git status.
+
+Inspect git diff.
+
+Run safe read-only commands.
+
+Examples:
+
+```txt
+ls
+pwd
+find
+rg
+grep
+cat normal source files
+git status
+git diff
+```
+
+## 5.2 Tier 1: Allowed inside workspace during a task
+
+These should usually be allowed once a task has started.
+
+Allowed:
+
+Edit files inside workspace.
+
+Create source files.
+
+Apply patches.
+
+Run tests.
+
+Run lint.
+
+Run typecheck.
+
+Run formatters.
+
+Run build.
+
+Modify docs.
+
+Important: these are allowed only inside the project workspace or sandbox.
+
+## 5.3 Tier 2: Ask once per task
+
+These require approval once, then are allowed for that task.
+
+Package installs.
+
+Lockfile changes.
+
+Network access.
+
+Running a dev server.
+
+Local database migrations.
+
+Code generation from schema.
+
+Major config changes.
+
+Large file creation or deletion.
+
+## 5.4 Tier 3: Always ask
+
+These require explicit approval every time.
+
+Read `.env` or secret files.
+
+Access files outside the project.
+
+Push to remote.
+
+Create pull request.
+
+Deploy.
+
+Modify production database.
+
+Send emails.
+
+Touch payment APIs.
+
+Run destructive commands.
+
+Use `sudo`.
+
+Change global machine state.
+
+## 5.5 Tier 4: Block by default
+
+These should be blocked unless the user enables advanced mode.
+
+Delete outside workspace.
+
+Read SSH keys.
+
+Read browser cookies.
+
+Exfiltrate secrets.
+
+Run unknown scripts from internet.
+
+Pipe remote script into shell.
+
+Modify system config.
+
+Access production credentials.
+
+## 5.6 Permission profiles
+
+Create three modes.
+
+### Fast Safe Mode
+
+Default.
+
+Allows:
+
+Read project.
+
+Edit project in sandbox.
+
+Run tests, lint, typecheck, build.
+
+Asks for:
+
+Dependencies.
+
+Network.
+
+Secrets.
+
+Database schema.
+
+Push.
+
+Deploy.
+
+Outside workspace.
+
+### Strict Mode
+
+Asks before edits and commands.
+
+Useful for sensitive repos.
+
+### Advanced Sandbox Mode
+
+Allows broad local changes inside an isolated copy.
+
+Still blocks or asks for:
+
+Secrets.
+
+Push.
+
+Deploy.
+
+Production data.
+
+Outside workspace.
+
+---
+
+# 6. Workspace Strategy
+
+Use a reversible workspace.
+
+MVP options:
+
+1. Use git checkpoint commits/stashes.
+2. Use a temporary copy of the repo.
+3. Use git worktree.
+
+Recommended first implementation:
+
+If repo is git-controlled, create a checkpoint before each task.
+
+If possible, use a temporary working copy or git worktree.
+
+The agent should work in the temporary workspace first.
+
+At the end, show a diff.
+
+Then apply changes to the real workspace only after user approval.
+
+## 6.1 Checkpoint behavior
+
+Before starting a task:
+
+Record git status.
+
+Refuse or warn if the workspace has uncommitted user changes.
+
+Create checkpoint metadata.
+
+If using git:
+
+Create a stash or temporary branch only if safe.
+
+Do not destroy user changes.
+
+Prefer non-invasive snapshots.
+
+## 6.2 Undo behavior
+
+The user should be able to undo the whole task.
+
+Support commands or UI actions:
+
+Undo last task.
+
+Undo file.
+
+Undo dependency change.
+
+Undo all except tests.
+
+---
+
+# 7. Tool Runtime
+
+The model should interact with the repo through tools, not raw uncontrolled access.
+
+Start with these tools:
+
+## 7.1 Read/search tools
+
+`list_files(path)`
+
+`read_file(path, start_line?, end_line?)`
+
+`search_files(query, glob?)`
+
+`glob_files(pattern)`
+
+`git_status()`
+
+`git_diff()`
+
+## 7.2 Edit tools
+
+`apply_patch(patch)`
+
+`write_file(path, content)`
+
+`create_file(path, content)`
+
+Prefer `apply_patch` over full-file rewrites.
+
+Full-file writes should be allowed but discouraged for large files.
+
+## 7.3 Command tools
+
+`run_command(command, purpose)`
+
+The command tool must go through the permission engine.
+
+Do not let the model run arbitrary commands without classification.
+
+For each command, classify:
+
+Read-only.
+
+Local check.
+
+Local mutation.
+
+Dependency change.
+
+Network.
+
+Secret access.
+
+Outside workspace.
+
+Destructive.
+
+Deployment.
+
+## 7.4 Check tools
+
+`detect_package_manager()`
+
+`run_tests()`
+
+`run_typecheck()`
+
+`run_lint()`
+
+`run_build()`
+
+These should be wrappers around discovered project scripts.
+
+Example:
+
+If `package.json` has `test`, run `npm test`.
+
+If `pnpm-lock.yaml` exists, prefer `pnpm`.
+
+If no test script exists, report that clearly.
+
+## 7.5 Review tools
+
+`get_changed_files()`
+
+`summarize_diff()`
+
+`blast_radius()`
+
+`revert_file(path)`
+
+`revert_task()`
+
+---
+
+# 8. Model Adapter
+
+Do not hard-code to one model provider.
+
+Create a model adapter interface.
+
+Initial target: OpenRouter.
+
+The model adapter should support:
+
+Chat completion.
+
+Tool calling if available.
+
+JSON mode or structured outputs if available.
+
+Streaming if available.
+
+Model selection.
+
+Fallback models.
+
+Cost tracking if practical.
+
+## 8.1 Suggested model roles
+
+For MVP, use one good coding model for everything.
+
+Later, use routing:
+
+Planning model: strong reasoning.
+
+Patch model: strong coding.
+
+Summary model: cheaper model.
+
+Critic model: strong reasoning.
+
+Do not overbuild routing at first.
+
+## 8.2 Prompt design
+
+The system prompt should tell the model:
+
+It is working inside a coding harness.
+
+It must use tools.
+
+It must not pretend to have read files.
+
+It must update task state when important facts change.
+
+It must prefer minimal diffs.
+
+It must ask product-level questions.
+
+It must not request approval for safe local actions.
+
+It must explain risky actions in user language.
+
+Core instruction:
+
+“You are not a terminal chatbot. You are an engineering agent operating through a permissioned harness. Preserve user intent, make reversible changes, and ask only at meaningful risk boundaries.”
+
+---
+
+# 9. Task Phases
+
+Implement tasks as phases.
+
+Do not expose these phases heavily to the user. They are internal.
+
+The user can see friendly status labels like:
+
+Understanding.
+
+Building.
+
+Checking.
+
+Ready to review.
+
+## Phase 1: Intake
+
+Goal: turn user request into structured task state.
+
+Inputs:
+
+User message.
+
+Project metadata.
+
+Current repo state.
+
+Outputs:
+
+Task type.
+
+Goal.
+
+Initial constraints.
+
+Initial definition of done.
+
+Open questions, if any.
+
+Task types:
+
+`build`
+
+`change`
+
+`fix`
+
+`explain`
+
+`refactor`
+
+`test`
+
+`setup`
+
+For MVP, support only:
+
+`build`
+
+`change`
+
+`fix`
+
+`explain`
+
+### Intake behavior
+
+If the task is clear enough, proceed.
+
+Do not ask unnecessary questions.
+
+Ask only if ambiguity affects product behavior.
+
+Example:
+
+User: “Add login.”
+
+Good question:
+
+“Should users sign in with email/password, Google, or both?”
+
+Bad question:
+
+“Should I use middleware or server actions?”
+
+## Phase 2: Triage
+
+Goal: understand the repo.
+
+Allowed:
+
+Read.
+
+Search.
+
+Inspect config.
+
+No edits unless needed for task state.
+
+Outputs:
+
+Relevant files.
+
+Framework.
+
+Package manager.
+
+Test commands.
+
+Likely implementation area.
+
+Initial hypotheses.
+
+Example triage output:
+
+```json
+{
+  "framework": "Next.js",
+  "package_manager": "pnpm",
+  "relevant_files": [
+    "src/app/account/page.tsx",
+    "src/components/Form.tsx",
+    "src/lib/user.ts"
+  ],
+  "likely_checks": ["pnpm lint", "pnpm test"],
+  "notes": ["Existing user update API found"]
+}
+```
+
+## Phase 3: Plan
+
+Goal: create a short implementation plan.
+
+The plan should be specific but not overcomplicated.
+
+Example:
+
+```txt
+1. Add settings page route.
+2. Reuse existing form components.
+3. Connect submit action to existing user update function.
+4. Add nav link.
+5. Run lint and tests.
+```
+
+If risky boundary is needed, ask now.
+
+Example:
+
+“This requires adding Stripe’s SDK. Allow dependency changes for this task?”
+
+## Phase 4: Patch
+
+Goal: make minimal changes in the sandbox.
+
+Rules:
+
+Prefer small diffs.
+
+Do not rewrite unrelated files.
+
+Do not change formatting broadly unless formatting is the task.
+
+Every changed file should have a reason.
+
+Avoid touching dependencies unless approved.
+
+Avoid touching secrets.
+
+Do not push or deploy.
+
+Outputs:
+
+Changed files.
+
+Patch summary.
+
+Any new claims or decisions.
+
+## Phase 5: Verify
+
+Goal: run appropriate checks.
+
+Checks may include:
+
+Targeted test.
+
+Full test.
+
+Lint.
+
+Typecheck.
+
+Build.
+
+Static inspection.
+
+If checks fail:
+
+Read failure.
+
+Diagnose.
+
+Patch again.
+
+Limit retry loop.
+
+Recommended max:
+
+3 automatic fix attempts.
+
+After that, explain blocker.
+
+## Phase 6: Critique
+
+Goal: adversarial self-review.
+
+Ask the model:
+
+“What is the most likely way this patch is wrong?”
+
+“What unrelated behavior could this break?”
+
+“Which changed file is least justified?”
+
+“Is there any unverified assumption?”
+
+If critique finds a real issue, either fix it or disclose it.
+
+## Phase 7: Final Review
+
+Goal: present the result to the user.
+
+Do not dump raw logs.
+
+Show:
+
+What changed.
+
+Why it changed.
+
+Files touched.
+
+Checks run.
+
+Any warnings.
+
+Choices remaining.
+
+Actions:
+
+Accept.
+
+Adjust.
+
+Undo.
+
+See diff.
+
+Example final message:
+
+“Done. I added a settings page, connected it to the existing user update API, added a nav link, and ran lint/typecheck successfully. I changed 4 files. I did not add avatar upload because the project does not currently have file storage; I used an avatar URL field instead. You can accept this, adjust it, or undo it.”
+
+---
+
+# 10. User-Facing Modes
+
+## 10.1 Casual Mode
+
+Default for vibe coders.
+
+Shows:
+
+Simple progress.
+
+Friendly summaries.
+
+Product-level questions.
+
+Review cards.
+
+Hides:
+
+Raw commands.
+
+Full logs.
+
+Complex diffs.
+
+Internal beliefs.
+
+## 10.2 Builder Mode
+
+Shows:
+
+Plan.
+
+Changed files.
+
+Checks.
+
+Preview if available.
+
+Some technical details.
+
+## 10.3 Developer Mode
+
+Shows:
+
+Tool calls.
+
+Commands.
+
+Diffs.
+
+Logs.
+
+Task JSON.
+
+Belief ledger.
+
+Model traces if available.
+
+---
+
+# 11. Feature Roadmap
+
+## Phase A: Empty Repo Foundation
+
+Goal: create the basic app skeleton.
+
+Features:
+
+CLI or local chat shell.
+
+OpenRouter model adapter.
+
+Basic config.
+
+Project root detection.
+
+Event logging.
+
+Task directory creation.
+
+Simple chat loop.
+
+No file editing yet.
+
+Deliverables:
+
+User can start the tool.
+
+User can type a request.
+
+System creates task state.
+
+Model can respond.
+
+Suggested files:
+
+```txt
+src/
+  index.ts
+  model/
+    openrouter.ts
+    types.ts
+  task/
+    task-manager.ts
+    types.ts
+  config/
+    config.ts
+  log/
+    event-log.ts
+```
+
+## Phase B: Project Reader
+
+Goal: let the agent inspect the repo safely.
+
+Features:
+
+List files.
+
+Read files.
+
+Search files.
+
+Detect package manager.
+
+Read package scripts.
+
+Git status.
+
+Permission Tier 0.
+
+Deliverables:
+
+User can ask:
+
+“What kind of project is this?”
+
+“Explain the auth system.”
+
+“Where is the dashboard code?”
+
+The agent should answer based on actual files.
+
+## Phase C: Task State and Planning
+
+Goal: convert user requests into structured tasks.
+
+Features:
+
+Task classification.
+
+Goal extraction.
+
+Definition of done.
+
+Open questions.
+
+Simple plan generation.
+
+Task status updates.
+
+Deliverables:
+
+User can ask:
+
+“Add a profile page.”
+
+System creates a plan and relevant task state.
+
+No edits yet, or edits disabled by config.
+
+## Phase D: Patch Engine
+
+Goal: allow safe local edits.
+
+Features:
+
+Apply patch.
+
+Create file.
+
+Write file.
+
+Track changed files.
+
+Show diff.
+
+Checkpoint before task.
+
+Undo task.
+
+Permission Tier 1.
+
+Deliverables:
+
+Agent can modify files inside workspace.
+
+User can review and undo.
+
+Important: prefer patch-based edits.
+
+## Phase E: Check Runner
+
+Goal: run local verification.
+
+Features:
+
+Detect and run test command.
+
+Detect and run lint.
+
+Detect and run typecheck.
+
+Detect and run build.
+
+Capture output.
+
+Summarize failures.
+
+Permission classification for commands.
+
+Deliverables:
+
+Agent can patch, run checks, and fix simple failures.
+
+## Phase F: Permission Boundaries
+
+Goal: avoid approval spam while blocking real risks.
+
+Features:
+
+Permission tiers.
+
+Ask once per task.
+
+Approval memory for task.
+
+Command classifier.
+
+Secret detection.
+
+Network detection.
+
+Outside-workspace blocking.
+
+Dependency approval.
+
+Deliverables:
+
+Agent no longer asks for safe edits/tests.
+
+Agent asks for dependencies, secrets, network, push, deploy.
+
+## Phase G: Review Card
+
+Goal: make output useful to nontechnical users.
+
+Features:
+
+Plain-English summary.
+
+Changed files.
+
+Checks run.
+
+Warnings.
+
+Accept/undo/adjust options.
+
+Optional technical details.
+
+Deliverables:
+
+User sees a clean task completion card.
+
+## Phase H: Critique Pass
+
+Goal: improve reliability.
+
+Features:
+
+Post-patch self-review.
+
+Unverified assumption detection.
+
+Blast radius summary.
+
+Risk summary.
+
+Deliverables:
+
+Agent catches obvious mistakes before finalizing.
+
+## Phase I: Shadow Workspace
+
+Goal: allow fast work without touching real workspace.
+
+Features:
+
+Temporary copy or git worktree.
+
+Apply changes in sandbox.
+
+Run checks in sandbox.
+
+Apply final patch to real repo after approval.
+
+Deliverables:
+
+Agent can work freely with less risk.
+
+This is a major usability improvement.
+
+## Phase J: Better Code Intelligence
+
+Goal: make the agent more capable.
+
+Features:
+
+Symbol search.
+
+Find definitions.
+
+Find references.
+
+Language server integration.
+
+Dependency graph.
+
+Route tracing.
+
+Test failure explanation.
+
+Deliverables:
+
+Agent uses structured code tools instead of only grep/read_file.
+
+## Phase K: Visual/Product UX
+
+Goal: serve vibe coders better.
+
+Features:
+
+Local web UI.
+
+Task cards.
+
+Preview pane.
+
+Diff viewer hidden behind “See code.”
+
+Progress timeline.
+
+Undo button.
+
+Mode switch: Casual / Builder / Developer.
+
+Deliverables:
+
+Product feels like an app builder, not a terminal tool.
+
+---
+
+# 12. Minimal MVP Scope
+
+Build this first:
+
+1. [x] CLI chat interface.
+2. [x] OpenRouter adapter.
+3. [x] Task state file.
+4. [x] File read/search tools.
+5. [x] Patch apply tool.
+6. [x] Git diff tracking.
+7. [x] Run tests/lint/build if available.
+8. [x] Basic permission tiers.
+9. [x] Final summary.
+10. [x] Undo task.
+
+Do not build first:
+
+Complex multi-agent system.
+
+Full IDE.
+
+Visual preview.
+
+Advanced semantic tools.
+
+Long-term memory.
+
+Cloud execution.
+
+Deployment.
+
+PR automation.
+
+Database automation.
+
+Those come later.
+
+---
+
+# 13. Command Classification Rules
+
+The harness should classify commands before execution.
+
+Examples:
+
+Allowed without asking:
+
+```bash
+ls
+pwd
+rg "query"
+grep -R "query" .
+git status
+git diff
+npm test
+npm run test
+npm run lint
+npm run typecheck
+npm run build
+pnpm test
+pnpm lint
+pnpm build
+```
+
+Ask once per task:
+
+```bash
+npm install package
+pnpm add package
+yarn add package
+pip install package
+bundle install
+cargo add package
+curl https://example.com
+npx prisma migrate dev
+```
+
+Always ask:
+
+```bash
+git push
+git push --force
+npm publish
+vercel deploy
+railway deploy
+supabase db push
+psql production_url
+cat .env
+cat ~/.ssh/id_rsa
+```
+
+Block by default:
+
+```bash
+sudo anything
+rm -rf /
+rm -rf ~
+curl URL | sh
+wget URL | sh
+chmod -R 777 /
+```
+
+Important: these are examples. Implement robust classification, not just string matching.
+
+---
+
+# 14. Prompting Guidelines for the Coding Model
+
+The model should receive a system prompt like this:
+
+```txt
+You are an AI coding agent operating inside a permissioned coding harness.
+
+The user communicates in plain English. Translate their request into technical work internally, but speak to them in product-level language.
+
+Do not claim you inspected files unless you used tools.
+
+Prefer minimal, reversible changes.
+
+Use the available tools for reading, searching, editing, and checking the project.
+
+Do not ask for approval for safe local actions that the harness allows.
+
+Ask only when crossing meaningful boundaries: dependencies, network, secrets, database schema, deletion, outside-workspace access, push, deploy, payments, or production data.
+
+When asking approval, explain the consequence in plain English.
+
+Track important facts, hypotheses, constraints, and decisions in task state.
+
+Distinguish facts from guesses.
+
+Before finalizing, critique your own patch and check for unverified assumptions.
+
+Final responses should summarize what changed, checks run, risks, and next choices.
+```
+
+---
+
+# 15. Important Behavioral Rules
+
+## 15.1 Do not over-ask
+
+The agent should not ask questions just to avoid responsibility.
+
+If the likely intent is clear, proceed.
+
+Ask only when ambiguity affects user-visible behavior.
+
+## 15.2 Do not over-edit
+
+The agent should avoid broad rewrites.
+
+Every changed file needs a reason.
+
+Do not reformat unrelated files.
+
+Do not change architecture unless the task requires it.
+
+## 15.3 Do not hide uncertainty
+
+If the agent is unsure, it should say so.
+
+But it should also continue with reasonable investigation.
+
+## 15.4 Do not pretend checks passed
+
+If tests were not run, say:
+
+“I did not run tests because this project does not define a test command.”
+
+Not:
+
+“Everything should work.”
+
+## 15.5 Do not expose raw complexity by default
+
+The user does not need to see internal JSON, unless they choose Developer Mode.
+
+---
+
+# 16. Recommended First Build Order
+
+Implement in this exact order:
+
+1. [x] Create project skeleton.
+2. [x] Add config loading.
+3. [x] Add OpenRouter chat call.
+4. [x] Add task creation and event logging.
+5. [x] Add file listing, reading, and search tools.
+6. [x] Add model tool-calling loop.
+7. [x] Add permission engine for read-only tools.
+8. [x] Add patch application.
+9. [x] Add git diff tracking.
+10. [x] Add checkpoint and undo.
+11. [x] Add command runner with classification.
+12. [x] Add test/lint/build wrappers.
+13. [x] Add final review summary.
+14. [x] Add ask-once permission approvals.
+15. [x] Add critique pass.
+
+This gets to a useful prototype without overbuilding.
+
+---
+
+# 17. Definition of Done for MVP
+
+The MVP is done when the user can start in an existing repo and say:
+
+“Fix this failing test.”
+
+The agent should:
+
+Inspect the repo.
+
+Find relevant files.
+
+Create a task.
+
+Make a plan.
+
+Edit files.
+
+Run the test.
+
+Iterate if needed.
+
+Show final summary.
+
+Show changed files.
+
+Allow undo.
+
+Ask no unnecessary approvals.
+
+Ask if it needs dependency/network/secret/outside-workspace access.
+
+---
+
+# 18. What Makes This Product Different
+
+This is not just another coding agent.
+
+The differentiator is:
+
+Plain-English user experience.
+
+Hidden structured task state.
+
+Reversible workspaces.
+
+Risk-boundary permissions.
+
+Minimal approval spam.
+
+Product-level questions.
+
+Post-patch critique.
+
+Reviewable summaries.
+
+The product should feel like:
+
+“Tell it what you want, let it work safely, review the result.”
+
+Not:
+
+“Manage a terminal-based AI that constantly asks for permission.”
+
+---
+
+# 19. Non-Negotiables
+
+The system must not require the user to write bash commands.
+
+The system must not ask approval for every safe local edit.
+
+The system must not allow secrets, deploys, pushes, production database access, or outside-workspace access without explicit approval.
+
+The system must maintain task state.
+
+The system must support undo.
+
+The system must distinguish facts from guesses.
+
+The system must show what changed.
+
+The system must be useful before it is complex.
+
+---
+
+# 20. First Implementation Target
+
+Start with a local CLI called something like:
+
+```bash
+agent
+```
+
+Usage:
+
+```bash
+agent
+```
+
+Then chat:
+
+```txt
+> Fix the login redirect bug
+```
+
+The assistant should respond in plain English and begin working.
+
+Later, add:
+
+```bash
+agent --mode strict
+agent --mode fast
+agent --developer
+```
+
+But the default should be low-friction.
+
+Default mode:
+
+Fast Safe Mode.
+
+Read/edit/test/build inside project allowed.
+
+Dependencies/network/secrets/push/deploy require approval.
+
+Outside project blocked.
+
+---
+
+# 21. Final Instruction to the AI Builder
+
+Build the simplest useful version first.
+
+Do not over-engineer the UI.
+
+Do not build multi-agent complexity before the basic loop works.
+
+Do not make safety annoying.
+
+Do not skip safety entirely.
+
+The correct balance is:
+
+Fast inside a reversible local sandbox.
+
+Careful at irreversible or external boundaries.
+
+The user should feel like they are talking to a capable builder, not operating a permission console.
