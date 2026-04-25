@@ -55,17 +55,20 @@ The CLI renders a styled chat shell with:
 ## Current Handoff Status
 
 Core MVP and Phase 2 are implemented and tested. Phase 3 items 1, 2,
-and 3 are in progress: item 1 (real-repo fixtures and end-to-end CLI
-coverage) covers a wide failure-mode surface; item 2 (stronger
+3, and 4 are in progress: item 1 (real-repo fixtures and end-to-end
+CLI coverage) covers a wide failure-mode surface; item 2 (stronger
 targeted checks and parsers) has structured reporters, build-error
 parsers, failed-test → source mapping, and repair-loop wiring; item 3
 (pre-patch blast radius and edit preview) has the planner, the
 warning surface, the edit-preview tool, the `/plan` shortcut, and the
-phase-controller gate. Latest verified baseline: `npm test` passes
-with 160 tests; `npm run test:e2e` runs 13 end-to-end tests that
-drive the CLI binary against four fixture repositories. Latest
-pushed commit at this handoff: `5531b10 Pass a compact structured
-failure summary to model.repair` on `main`.
+phase-controller gate; item 4 (streaming wired into the CLI) has the
+SSE plumbing, tool-call delta reassembly, cancellation via
+`AbortController`, and streamed-usage recording. Latest verified
+baseline: `npm test` passes with 163 tests; `npm run test:e2e` runs
+13 end-to-end tests that drive the CLI binary against four fixture
+repositories. Latest pushed commit at this handoff: `02ccd7a Land
+pre-patch blast radius, warnings, edit preview (Phase 3 item 3)` on
+`main`.
 
 Most recent completed work:
 
@@ -187,6 +190,23 @@ Most recent completed work:
     internally so consecutive prompts can be answered cleanly when
     two boundaries fire in sequence (pre-patch warning + actual
     operation).
+- Phase 3 item 4 progress:
+  - `streamOpenRouterChat` in `src/model/openrouter.js` handles the
+    SSE stream: text deltas are forwarded through `onToken`,
+    tool-call deltas are accumulated by index, and the helper
+    returns the same `{ choices, usage }` shape as the non-streaming
+    call so the rest of the `respond` loop is unchanged.
+  - `respond` now accepts an `AbortSignal`; the CLI creates a
+    per-task `AbortController` and `cancel task` aborts it.
+    `AbortError` is detected and bypasses the retry loop. Aborted
+    requests resolve as `{ cancelled: true, ... }` with a
+    `model_aborted` event recorded so the rest of the lifecycle can
+    finish cleanly.
+  - The streaming path passes `stream_options.include_usage` so
+    OpenRouter still returns token / cost data in the final SSE
+    chunk; `model-usage.jsonl` tags the entry with `streaming: true`.
+  - The CLI prints tokens to stdout as they arrive with a one-line
+    "Streaming model response" progress indicator on the first token.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -210,16 +230,19 @@ Where we left off:
 
 Next recommended work:
 
-1. Item 4 (streaming wired into the CLI). The adapter already exposes
-   `streamText`; wiring streamed text + streamed tool-call deltas
-   through `respond` and rendering progressively via `ui.assistant` is
-   the main piece, plus an `AbortController` so `cancel task` can
-   interrupt a stream mid-flight.
-2. Item 3 leftovers: a "preview" review action that shows the next
+1. Item 5 (multi-provider model adapters). The
+   `createModelAdapter(config)` seam already exists in
+   `src/model/index.js`; add `src/model/anthropic.js`,
+   `src/model/openai.js`, and `src/model/local.js` adapters that
+   conform to the same contract.
+2. Item 4 leftovers: a streaming-aware `ui.assistant` variant that
+   renders tokens inline rather than as a progress message, and
+   streaming the repair loop's model calls.
+3. Item 3 leftovers: a "preview" review action that shows the next
    staged patch before apply, and richer pre-patch impact analysis
    (rename / signature changes that ripple through the import graph).
-3. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring)
-   are smaller and can land alongside item 4 or later.
+4. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring)
+   are smaller and can land alongside any of the above.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 

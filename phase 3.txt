@@ -73,7 +73,23 @@ Current status:
   item 3: a "preview" review action that shows the next staged patch
   before apply, and richer pre-patch impact analysis (rename / signature
   changes that would ripple through the import graph).
-- [ ] Streaming wired into the CLI (item 4) — not started.
+- [~] Streaming wired into the CLI (item 4) — foundation in place.
+  `requestOpenRouter` routes through a new `streamOpenRouterChat`
+  helper when `modelConfig.capabilities.streaming` is true and the
+  caller passes `onToken`. The helper accumulates SSE deltas (text +
+  tool_call deltas by index) and reassembles them into the same
+  shape as the non-streaming path so the existing tool-dispatch
+  loop is unchanged. `respond` now accepts `onToken` and an
+  `AbortSignal`; the CLI passes a per-task `AbortController`, prints
+  tokens as they arrive, and `cancel task` aborts the in-flight
+  request. Aborted requests surface as `{ cancelled: true, ... }`
+  with a `model_aborted` event recorded. Locked in by three new
+  unit tests (token-and-tool-call reassembly, fallback when
+  capabilities.streaming=false, mid-stream abort). Still TBD: a
+  streaming-aware `ui.assistant` variant that renders tokens
+  inline rather than as a progress message; streaming the repair
+  loop's model calls; and surfacing tool-call announcements as a
+  thinking spinner.
 - [ ] Multi-provider model adapters (item 5) — not started.
 - [ ] Structured outputs beyond critique (item 6) — not started.
 - [ ] Resumable tasks and cancel-in-flight (item 7) — not started.
@@ -474,7 +490,8 @@ written, and the user can preview a staged patch before it lands.
 
 ## 4. Streaming Wired Into The CLI
 
-Status: not started. Adapter already exposes `streamText`.
+Status: in progress. Adapter, plumbing, and abort path are landed; the
+remaining UI polish is on top of a working stream.
 
 ### Goal
 
@@ -484,22 +501,44 @@ anything.
 
 ### Add
 
-- [ ] `src/index.js` integration: when `capabilities.streaming` is true,
-  switch the `respond` path to a streaming variant that emits partial text
-  through `ui.assistant`/`ui.progress`.
-- [ ] Streaming tool-call loop in `src/model/openrouter.js`: handle
-  incremental `tool_calls` deltas from OpenRouter, dispatch tools as soon as
-  arguments are complete, and stream both prose and tool announcements.
+- [x] `src/index.js` integration: when `capabilities.streaming` is true,
+  the `respond` call passes an `onToken` callback that prints tokens to
+  stdout as they arrive (with a one-line "Streaming model response"
+  progress indicator on the first token, then a closing newline).
+- [x] Streaming tool-call loop in `src/model/openrouter.js`: a new
+  `streamOpenRouterChat` helper handles the SSE stream, accumulates
+  text + tool-call deltas by index, and returns the same
+  `{ choices, usage }` shape as the non-streaming call so the existing
+  tool-dispatch loop in `respond` is unchanged.
 - [ ] CLI rendering: a streaming-aware variant of `ui.assistant` that does not
   re-box on every token, plus a "thinking" status while tools run.
-- [ ] Backpressure and cancellation: streaming respects an `AbortController`
-  passed from the CLI so a `cancel task` action mid-stream stops the request
-  cleanly.
-- [ ] Usage and cost recorded against the streamed call (today only the
-  non-streaming `respond` path records usage).
-- [ ] Tests with a fake stream emitter exercising token order, tool-call
-  deltas, mid-stream cancellation, and graceful fallback when the provider
-  does not support streaming.
+- [x] Backpressure and cancellation: every `respond` call accepts an
+  `AbortSignal`. The CLI creates a per-task `AbortController` and
+  `cancel task` aborts the controller. Aborted requests surface as
+  `{ cancelled: true, ... }` with a `model_aborted` event recorded.
+  `requestOpenRouter` propagates `AbortError` immediately rather than
+  retrying.
+- [x] Usage and cost recorded against the streamed call. The streaming
+  path forwards `stream_options.include_usage` so OpenRouter returns
+  usage in the final SSE chunk; `recordModelUsage` tags the entry with
+  `streaming: true`.
+- [x] Tests with a fake stream emitter exercising token order, tool-call
+  delta reassembly across multiple SSE chunks, fallback when
+  `capabilities.streaming=false`, and mid-stream cancellation.
+
+### Notes for the next agent
+
+- The streaming path uses `stream_options: { include_usage: true }` so
+  OpenRouter emits a final chunk with `usage`. Without it, streamed
+  calls would record `usage: null`.
+- `AbortError` is detected via `error.name === "AbortError"` or the
+  numeric `ABORT_ERR` / `20` codes (Windows / Node variants emit
+  different shapes). It is propagated immediately; the retry loop
+  bypasses it so a cancelled request does not silently retry.
+- `respond` returns `{ cancelled: true }` when the abort fires; the
+  CLI's caller treats this like any other model response and lets the
+  task finish via verify/critique/final_review with the cancellation
+  noted in `taskPatch.assumptions`.
 
 ### Definition Of Done
 

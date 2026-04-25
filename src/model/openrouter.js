@@ -450,7 +450,7 @@ export function createOpenRouterAdapter(modelConfig) {
       }
     },
 
-    async respond({ userRequest, projectSummary, tools, activeTask, allowedTools = null, onProgress = () => {} }) {
+    async respond({ userRequest, projectSummary, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
         return localHarnessResponse(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
@@ -474,7 +474,16 @@ export function createOpenRouterAdapter(modelConfig) {
         ];
 
         for (let step = 0; step < 8; step += 1) {
-          const body = await requestOpenRouter({ apiKey, modelConfig, messages, options: { allowedTools }, activeTask, purpose: "respond" });
+          const body = await requestOpenRouter({
+            apiKey,
+            modelConfig,
+            messages,
+            options: { allowedTools },
+            activeTask,
+            purpose: "respond",
+            onToken,
+            signal
+          });
           const message = body.choices?.[0]?.message;
           if (!message) {
             return {
@@ -505,6 +514,9 @@ export function createOpenRouterAdapter(modelConfig) {
               name,
               content: JSON.stringify(trimToolResult(result))
             });
+            if (signal?.aborted) {
+              throw signal.reason ?? Object.assign(new Error("Aborted"), { name: "AbortError" });
+            }
           }
         }
 
@@ -516,6 +528,22 @@ export function createOpenRouterAdapter(modelConfig) {
           }
         };
       } catch (error) {
+        if (isAbortError(error)) {
+          if (activeTask?.dir) {
+            await appendEvent(activeTask.dir, {
+              type: "model_aborted",
+              phase: "respond",
+              message: "Model request was cancelled before completion."
+            });
+          }
+          return {
+            message: "The model request was cancelled before completion.",
+            taskPatch: {
+              assumptions: ["The user cancelled the model request mid-flight."]
+            },
+            cancelled: true
+          };
+        }
         return {
           message: `The model call failed: ${error.message}. I inspected the workspace locally instead.\n\n${formatLocalSummary(projectSummary)}`,
           taskPatch: {}
@@ -657,15 +685,21 @@ function summarizeToolResult(result) {
   };
 }
 
-async function requestOpenRouter({ apiKey, modelConfig, messages, options = { tools: true }, activeTask = null, purpose = "model_call" }) {
+async function requestOpenRouter({ apiKey, modelConfig, messages, options = { tools: true }, activeTask = null, purpose = "model_call", onToken = null, signal = null }) {
   const models = modelCandidates(modelConfig);
   const maxRetries = Number.isInteger(modelConfig.maxRetries) ? modelConfig.maxRetries : 2;
+  // Stream when the caller asked for it (via onToken) and the model
+  // configuration advertises streaming capability. Otherwise fall back
+  // to the existing single-shot fetch.
+  const useStreaming = typeof onToken === "function" && Boolean(modelConfig.capabilities?.streaming);
   let lastError = null;
 
   for (const model of models) {
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       try {
-        const body = await callOpenRouter(apiKey, modelConfig, model, messages, options);
+        const body = useStreaming
+          ? await streamOpenRouterChat(apiKey, modelConfig, model, messages, options, { onToken, signal })
+          : await callOpenRouter(apiKey, modelConfig, model, messages, options, { signal });
         await recordModelUsage(activeTask, {
           provider: modelConfig.provider || "openrouter",
           model,
@@ -673,7 +707,8 @@ async function requestOpenRouter({ apiKey, modelConfig, messages, options = { to
           attempt: attempt + 1,
           fallback: model !== modelConfig.model,
           usage: normalizeUsage(body.usage),
-          status: "ok"
+          status: "ok",
+          streaming: useStreaming
         });
         return body;
       } catch (error) {
@@ -686,8 +721,12 @@ async function requestOpenRouter({ apiKey, modelConfig, messages, options = { to
           fallback: model !== modelConfig.model,
           status: "failed",
           transient: isTransientProviderError(error),
-          error: error.message
+          error: error.message,
+          streaming: useStreaming
         });
+        // Aborted requests must not retry — propagate immediately so
+        // the caller can shut down cleanly.
+        if (isAbortError(error)) throw error;
         if (!isTransientProviderError(error)) throw error;
         if (attempt < maxRetries) {
           await sleep(retryDelayMs(modelConfig, attempt));
@@ -699,7 +738,7 @@ async function requestOpenRouter({ apiKey, modelConfig, messages, options = { to
   throw lastError || new Error("OpenRouter request failed.");
 }
 
-async function callOpenRouter(apiKey, modelConfig, model, messages, options = { tools: true }) {
+async function callOpenRouter(apiKey, modelConfig, model, messages, options = { tools: true }, { signal = null } = {}) {
   const body = {
     model,
     messages
@@ -720,7 +759,8 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
       "HTTP-Referer": "http://localhost",
       "X-Title": "Plain-English AI Coding Harness"
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   });
   if (!response.ok) {
     const error = new Error(`OpenRouter returned ${response.status}`);
@@ -729,6 +769,157 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
     throw error;
   }
   return response.json();
+}
+
+/**
+ * Stream a chat completion from OpenRouter and reassemble it into the
+ * same shape `callOpenRouter` returns (`{ choices: [{ message,
+ * finish_reason }], usage }`). Text content is forwarded through
+ * `onToken` as it arrives; tool-call deltas are accumulated by index
+ * so the caller's existing tool-dispatch loop is unchanged.
+ */
+async function streamOpenRouterChat(apiKey, modelConfig, model, messages, options = { tools: true }, { onToken = () => {}, signal = null } = {}) {
+  const body = {
+    model,
+    messages,
+    stream: true
+  };
+  if (options.tools !== false) {
+    body.tools = filterToolDefinitions(options.allowedTools);
+    body.tool_choice = "auto";
+  }
+  if (options.jsonMode && modelConfig.capabilities?.jsonMode) {
+    body.response_format = { type: "json_object" };
+  }
+  // OpenRouter passes through usage when `stream_options.include_usage`
+  // is set. Without this, the streamed chunks omit usage and we fall
+  // back to recording a `null` usage record.
+  body.stream_options = { include_usage: true };
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "http://localhost",
+      "X-Title": "Plain-English AI Coding Harness"
+    },
+    body: JSON.stringify(body),
+    signal
+  });
+  if (!response.ok) {
+    const error = new Error(`OpenRouter returned ${response.status}`);
+    error.status = response.status;
+    error.transient = response.status === 429 || response.status >= 500;
+    throw error;
+  }
+  if (!response.body?.getReader) {
+    throw new Error("Provider did not return a readable stream for chat.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  const toolCallsByIndex = new Map();
+  let finishReason = null;
+  let usage = null;
+
+  const handleEvent = (data) => {
+    if (!data || data === "[DONE]") return;
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return;
+    }
+    const choice = parsed.choices?.[0];
+    if (choice?.delta?.content) {
+      content += choice.delta.content;
+      try {
+        onToken(choice.delta.content);
+      } catch {
+        /* onToken throwing must not break the stream */
+      }
+    }
+    if (Array.isArray(choice?.delta?.tool_calls)) {
+      for (const tcDelta of choice.delta.tool_calls) {
+        accumulateToolCallDelta(toolCallsByIndex, tcDelta);
+      }
+    }
+    if (choice?.finish_reason) finishReason = choice.finish_reason;
+    if (parsed.usage) usage = parsed.usage;
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        handleEvent(trimmed.slice("data:".length).trim());
+      }
+    }
+    if (buffer.trim()) {
+      const trimmed = buffer.trim();
+      if (trimmed.startsWith("data:")) {
+        handleEvent(trimmed.slice("data:".length).trim());
+      }
+    }
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    throw error;
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+
+  const toolCalls = [...toolCallsByIndex.entries()]
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, tc]) => ({
+      id: tc.id,
+      type: tc.type || "function",
+      function: {
+        name: tc.function?.name || "",
+        arguments: tc.function?.arguments || ""
+      }
+    }));
+
+  const message = {
+    role: "assistant",
+    content: content || null
+  };
+  if (toolCalls.length) message.tool_calls = toolCalls;
+
+  return {
+    choices: [{ message, finish_reason: finishReason }],
+    usage
+  };
+}
+
+function accumulateToolCallDelta(map, delta) {
+  if (!delta || delta.index === undefined) return;
+  const key = String(delta.index);
+  const existing = map.get(key) || { index: delta.index, function: {} };
+  if (delta.id && !existing.id) existing.id = delta.id;
+  if (delta.type && !existing.type) existing.type = delta.type;
+  if (delta.function?.name) {
+    existing.function.name = (existing.function.name || "") + delta.function.name;
+  }
+  if (typeof delta.function?.arguments === "string") {
+    existing.function.arguments = (existing.function.arguments || "") + delta.function.arguments;
+  }
+  map.set(key, existing);
+}
+
+function isAbortError(error) {
+  if (!error) return false;
+  if (error.name === "AbortError") return true;
+  if (error.code === "ABORT_ERR" || error.code === 20) return true;
+  return false;
 }
 
 async function requestOpenRouterStream({ apiKey, modelConfig, messages, activeTask = null, purpose = "stream", onToken = () => {} }) {

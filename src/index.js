@@ -214,6 +214,12 @@ async function main() {
       risky_boundaries: riskyBoundaries
     });
     let response;
+    // An AbortController scoped to this task so `cancel task` (or
+    // Ctrl-C) can interrupt an in-flight model request without
+    // tearing down the whole CLI loop.
+    const taskAbort = new AbortController();
+    activeTask.abortController = taskAbort;
+    let streamingActive = false;
     try {
       response = await model.respond({
         userRequest: line,
@@ -223,8 +229,18 @@ async function main() {
         allowedTools: TASK_PHASES.patch.allowedTools,
         onProgress(message) {
           output.write(`${ui.progress(message)}\n`);
-        }
+        },
+        onToken(token) {
+          if (!streamingActive) {
+            output.write(`${ui.progress("Streaming model response")}\n`);
+            streamingActive = true;
+          }
+          output.write(token);
+        },
+        signal: taskAbort.signal
       });
+      // Close out the streaming line if any tokens were written.
+      if (streamingActive) output.write("\n");
     } catch (error) {
       const errorMessage = error?.message || String(error);
       output.write(`${ui.warning(`Model error: ${errorMessage}. Continuing with a fallback response so the task can finish cleanly.`)}\n`);
@@ -601,6 +617,12 @@ async function cancelTask(activeTask, ui) {
   if (!activeTask) {
     output.write(`${ui.warning("There is no active task to cancel.")}\n`);
     return;
+  }
+  // If a model request is mid-flight, abort it. The AbortSignal will
+  // reach the streaming reader (or fetch) and the respond loop will
+  // surface a `cancelled: true` response.
+  if (activeTask.abortController && !activeTask.abortController.signal.aborted) {
+    try { activeTask.abortController.abort(); } catch { /* ignore */ }
   }
   await updateTaskStatus(activeTask, "cancelled");
   await appendEvent(activeTask.dir, {

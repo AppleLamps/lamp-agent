@@ -170,6 +170,209 @@ test("OpenRouter critique uses JSON mode when available and returns structured o
   }
 });
 
+test("OpenRouter respond() streams tokens and reassembles tool_calls when capabilities.streaming is true", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-stream-respond-"));
+  const activeTask = { id: "task-stream-respond", dir: path.join(cwd, ".agent", "tasks", "task-stream-respond") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  const tokens = [];
+  let requestedBody = null;
+
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    let call = 0;
+    globalThis.fetch = async (_url, init) => {
+      call += 1;
+      requestedBody = JSON.parse(init.body);
+      assert.equal(requestedBody.stream, true);
+      const encoder = new TextEncoder();
+      if (call === 1) {
+        // First call: model emits "Looking" text and a tool call delta
+        // for `list_files` split across two chunks, then ends with a
+        // tool_calls finish_reason.
+        return {
+          ok: true,
+          status: 200,
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Looking"}}]}\n\n'));
+              controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":" up..."}}]}\n\n'));
+              controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"list_","arguments":"{\\""}}]}}]}\n\n'));
+              controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"files","arguments":"path\\":\\".\\""}}]}}]}\n\n'));
+              controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]}}]}\n\n'));
+              controller.enqueue(encoder.encode('data: {"choices":[{"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":50,"completion_tokens":12,"total_tokens":62}}\n\n'));
+              controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+              controller.close();
+            }
+          })
+        };
+      }
+      // Second call: final reply with a stop finish_reason.
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"All done."}}]}\n\n'));
+            controller.enqueue(encoder.encode('data: {"choices":[{"finish_reason":"stop"}]}\n\n'));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          }
+        })
+      };
+    };
+
+    const tools = {
+      listFiles: async (path) => ({ ok: true, files: [`${path}/x.js`] })
+    };
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "stream/model",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      retryBaseDelayMs: 0,
+      capabilities: { toolCalling: true, streaming: true }
+    });
+
+    const response = await adapter.respond({
+      userRequest: "list files",
+      projectSummary: { fileCount: 1, scripts: [], notableFiles: [], git: "clean" },
+      tools,
+      activeTask,
+      onToken(token) { tokens.push(token); }
+    });
+
+    assert.equal(response.message, "All done.");
+    // Tokens from BOTH stream rounds were forwarded in order.
+    assert.deepEqual(tokens, ["Looking", " up...", "All done."]);
+
+    const usage = (await readFile(path.join(activeTask.dir, "model-usage.jsonl"), "utf8")).trim();
+    assert.match(usage, /"streaming":true/);
+    assert.match(usage, /"total_tokens":62/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter respond() falls back to non-streaming when capabilities.streaming is false", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-stream-off-"));
+  const activeTask = { id: "task-stream-off", dir: path.join(cwd, ".agent", "tasks", "task-stream-off") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      // The non-streaming path must NOT request a stream.
+      assert.notEqual(body.stream, true);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "Plain answer." } }],
+          usage: { total_tokens: 7 }
+        })
+      };
+    };
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "stream/off",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      retryBaseDelayMs: 0,
+      capabilities: { toolCalling: true, streaming: false }
+    });
+
+    const tokens = [];
+    const response = await adapter.respond({
+      userRequest: "say hi",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "" },
+      tools: {},
+      activeTask,
+      // onToken provided but streaming capability false → ignored.
+      onToken(token) { tokens.push(token); }
+    });
+
+    assert.equal(response.message, "Plain answer.");
+    assert.equal(tokens.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter respond() returns cancelled:true when AbortController fires mid-stream", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-stream-abort-"));
+  const activeTask = { id: "task-stream-abort", dir: path.join(cwd, ".agent", "tasks", "task-stream-abort") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  const controller = new AbortController();
+
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      const encoder = new TextEncoder();
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream({
+          async start(streamController) {
+            streamController.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Working..."}}]}\n\n'));
+            // Trigger the abort just after the first chunk lands.
+            await new Promise((r) => setTimeout(r, 10));
+            controller.abort();
+            // The ReadableStream signal listener (set up via fetch) will
+            // close/error the stream. We surface that here for clarity.
+            streamController.error(Object.assign(new Error("Aborted"), { name: "AbortError" }));
+          }
+        })
+      };
+    };
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "abort/model",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      retryBaseDelayMs: 0,
+      capabilities: { toolCalling: true, streaming: true }
+    });
+
+    const response = await adapter.respond({
+      userRequest: "long task",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "" },
+      tools: {},
+      activeTask,
+      onToken() {},
+      signal: controller.signal
+    });
+
+    assert.equal(response.cancelled, true);
+    assert.match(response.message, /cancelled/i);
+
+    const events = (await readFile(path.join(activeTask.dir, "events.jsonl"), "utf8"))
+      .trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.ok(events.some((e) => e.type === "model_aborted"),
+      "a model_aborted event should be recorded");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("OpenRouter streamText emits tokens from SSE chunks", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-model-stream-"));
   const activeTask = { id: "task-stream", dir: path.join(cwd, ".agent", "tasks", "task-stream") };
