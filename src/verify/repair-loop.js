@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "../log/event-log.js";
+import { summarizeFailureForRepair } from "../checks/failure-summary.js";
 
 export async function verifyAndRepair({
   activeTask,
@@ -49,7 +50,12 @@ export async function verifyAndRepair({
         tools,
         userRequest,
         projectSummary,
-        failedChecks: failed.map((check) => check.parsed || check),
+        // Pass a compact, structured failure shape to the model rather
+        // than the full parsed record. The model gets the structured
+        // errors[], failed_files, expected/actual, and the
+        // provenance-tagged likely_relevant_files, but no
+        // raw-output paths or timestamps.
+        failedChecks: failed.map((check) => summarizeFailureForRepair(check.parsed || check)),
         testRunner: testRunnerInfo,
         attempt,
         maxAttempts,

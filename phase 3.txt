@@ -49,10 +49,12 @@ Current status:
   code index is now done in `src/checks/relevant-files.js` and wired
   into `runCheckCommand`; every check record carries a re-ranked
   `likely_relevant_files` plus a `likely_relevant_files_provenance`
-  map (`stack` / `import-graph` / `co-located`). Still TBD for
+  map (`stack` / `import-graph` / `co-located`). The repair loop
+  summarises failures via `src/checks/failure-summary.js` before
+  handing them to `model.repair`, so the model sees a compact
+  structured shape instead of the full audit record. Still TBD for
   item 2: pytest JUnit wiring (needs a tmp-file capture since pytest
-  does not write JUnit to stdout), ESLint structured wiring, and
-  feeding the new structured failure shape into `model.repair`.
+  does not write JUnit to stdout) and ESLint structured wiring.
 - [ ] Pre-patch blast radius and edit preview (item 3) — not started.
 - [ ] Streaming wired into the CLI (item 4) — not started.
 - [ ] Multi-provider model adapters (item 5) — not started.
@@ -347,8 +349,19 @@ so the repair loop can edit the right thing.
   `import-graph` provenance.
 - [x] Golden-output tests under `test/fixtures/check-output/` for each parser
   so future regressions show up as diffs.
-- [ ] Repair loop changes that prefer the new structured failure shape and
+- [x] Repair loop changes that prefer the new structured failure shape and
   pass it into `model.repair` instead of free-form `parsed` blobs.
+  `src/checks/failure-summary.js` exposes
+  `summarizeFailureForRepair(parsed)` which picks the model-useful
+  fields (`check_type`, `status`, `errors[]`, `failed_files`,
+  `failed_tests`, `expected`/`actual`, parsed source, and
+  `likely_relevant_files` zipped with their provenance tags) and
+  drops the audit-only fields (raw stdout/stderr paths, IDs,
+  timestamps, redundant full-message strings). `repair-loop.js` calls
+  this summariser before passing failures to `model.repair`. Locked
+  in by 4 unit tests in `test/failure-summary.test.js` and an
+  integration test in `test/repair-loop.test.js` that captures the
+  argument `model.repair` actually receives.
 
 ### Notes for the next agent
 

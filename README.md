@@ -55,18 +55,17 @@ The CLI renders a styled chat shell with:
 ## Current Handoff Status
 
 Core MVP and Phase 2 are implemented and tested. Phase 3 items 1 and 2
-are in progress: item 1 (real-repo fixtures and end-to-end CLI coverage)
-is almost done; item 2 (stronger targeted checks and parsers) has the
-structured-reporter foundation in place, the test-runner wiring done
-for Node `--test`, Vitest, and Jest, build-error parsers covering all
-seven targeted tools (esbuild, Vite/Rollup, webpack, Next.js,
-TypeScript pretty mode, Cargo, Go), and the failed-test → source
-mapping that walks the failing test file's imports through the code
-index. Latest verified baseline: `npm test` passes with 143 tests;
-`npm run test:e2e` runs 13 end-to-end tests that drive the CLI binary
-against four fixture repositories. Latest pushed commit at this
-handoff: `c19b3d8 Add build-error parsers for esbuild, Vite, webpack,
-Next, TS, Cargo, Go` on `main`.
+are mostly done: item 1 (real-repo fixtures and end-to-end CLI
+coverage) covers a wide failure-mode surface; item 2 (stronger
+targeted checks and parsers) has the structured-reporter foundation,
+test-runner wiring for Node/Vitest/Jest, build-error parsers for all
+seven targeted tools, the failed-test → source mapping via the code
+index, and the repair-loop wiring that hands a compact structured
+failure shape to `model.repair`. Latest verified baseline: `npm test`
+passes with 148 tests; `npm run test:e2e` runs 13 end-to-end tests
+that drive the CLI binary against four fixture repositories. Latest
+pushed commit at this handoff: `8515879 Add failed-test -> source
+mapping via code index` on `main`.
 
 Most recent completed work:
 
@@ -160,9 +159,15 @@ Most recent completed work:
     calls the mapper after parsing so every check record carries both
     a re-ranked `likely_relevant_files` (import-graph > co-located
     > stack) and a `likely_relevant_files_provenance` map.
+  - `src/checks/failure-summary.js` reduces a parsed check record to
+    a compact, model-friendly shape (status, errors[], failed_tests,
+    expected/actual, parsed source, likely_relevant_files zipped with
+    provenance, plus the invoking command). The repair loop calls
+    this summariser before passing failures to `model.repair`, so the
+    model sees structured evidence instead of the full audit record
+    (with raw-output paths, IDs, timestamps, etc.).
   - Still TBD for item 2: pytest JUnit wiring (needs tmp-file
-    capture), ESLint structured wiring, and feeding the structured
-    failure shape into `model.repair`.
+    capture) and ESLint structured wiring.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -186,13 +191,14 @@ Where we left off:
 
 Next recommended work:
 
-1. Finish Phase 3 item 2 by feeding the new structured failure shape
-   (with `parsed_source`, `errors[]`, and provenance-tagged
-   `likely_relevant_files`) into `model.repair` so the repair loop
-   sees richer evidence than free-form blobs. Then wire pytest JUnit
-   (needs tmp-file capture) and ESLint structured parsing.
-2. After that, item 3 (pre-patch blast radius and edit preview) is
-   the next item on the build order.
+1. Item 3 (pre-patch blast radius and edit preview) is the next item
+   on the build order. Move blast-radius computation to before patch,
+   add an `edit-spec.json` artifact, and gate the patch phase on a
+   recorded pre-patch plan (analogous to the existing
+   `current_plan` / `risky_boundaries` gates).
+2. The remaining item 2 stragglers (pytest JUnit wiring, ESLint
+   structured wiring) are smaller and can land alongside item 3 or
+   later.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 

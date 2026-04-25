@@ -41,6 +41,57 @@ test("verifyAndRepair reruns checks after a successful repair", async () => {
   }
 });
 
+test("verifyAndRepair passes a summarized structured failure into model.repair", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-"));
+  try {
+    await writeFile(path.join(cwd, "package.json"), JSON.stringify({
+      scripts: { test: "node -e \"console.error('FAIL src/api.test.js'); process.exit(1)\"" }
+    }));
+    const activeTask = await createTask(cwd, "Inspect repair payload");
+    const tools = createToolRuntime({ cwd, config: config(), requestApproval: async () => ({ approved: true }) });
+
+    let captured = null;
+    const model = {
+      repair: async (args) => {
+        captured = args;
+        return { ok: false, noop: true, message: "stub: stop after one attempt." };
+      }
+    };
+
+    await verifyAndRepair({
+      activeTask,
+      tools,
+      model,
+      userRequest: "Inspect repair payload",
+      projectSummary: {},
+      maxAttempts: 1
+    });
+
+    assert.ok(captured, "model.repair should have been invoked");
+    assert.ok(Array.isArray(captured.failedChecks) && captured.failedChecks.length >= 1,
+      "failedChecks should be present");
+    const summary = captured.failedChecks[0];
+    // The summarised shape carries the structured fields the model needs.
+    assert.equal(summary.status, "failed");
+    assert.ok("errors" in summary);
+    assert.ok("failed_tests" in summary);
+    assert.ok("likely_relevant_files" in summary,
+      "likely_relevant_files should be present in the summary");
+    // Each likely_relevant_files entry carries provenance, not just a path.
+    if (summary.likely_relevant_files.length > 0) {
+      const entry = summary.likely_relevant_files[0];
+      assert.ok("path" in entry && "provenance" in entry,
+        `entries should be {path, provenance}; got ${JSON.stringify(entry)}`);
+    }
+    // Audit-only fields are not in the model payload.
+    assert.equal(summary.raw_stdout_path, undefined);
+    assert.equal(summary.created_at, undefined);
+    assert.equal(summary.id, undefined);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("verifyAndRepair records failure when repair is unavailable", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-"));
   try {
