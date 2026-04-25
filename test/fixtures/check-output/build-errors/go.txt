@@ -1,0 +1,5 @@
+# example.com/calc
+./calc.go:7:9: undefined: undefinedFunc
+./calc.go:12:14: cannot use "string" (untyped string constant) as int value in argument to add
+internal/util/format.go:3:18: imported and not used: "fmt"
+FAIL    example.com/calc [build failed]

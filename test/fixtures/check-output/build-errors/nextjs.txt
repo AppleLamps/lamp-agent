@@ -1,0 +1,17 @@
+> next build
+
+Failed to compile.
+
+./src/app/page.tsx:7:13
+Type error: Property 'foo' does not exist on type 'string'.
+
+  5 | export default function Page() {
+  6 |   const value = "hello";
+> 7 |   return value.foo;
+    |             ^
+  8 | }
+
+./src/components/Header.tsx:12:9
+Module not found: Can't resolve '../icons/Logo'
+
+Next.js build failed

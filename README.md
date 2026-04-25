@@ -57,12 +57,14 @@ The CLI renders a styled chat shell with:
 Core MVP and Phase 2 are implemented and tested. Phase 3 items 1 and 2
 are in progress: item 1 (real-repo fixtures and end-to-end CLI coverage)
 is almost done; item 2 (stronger targeted checks and parsers) has the
-structured-reporter foundation in place and the test-runner wiring done
-for Node `--test`, Vitest, and Jest. Latest verified baseline:
-`npm test` passes with 126 tests; `npm run test:e2e` runs 13 end-to-end
+structured-reporter foundation in place, the test-runner wiring done
+for Node `--test`, Vitest, and Jest, and build-error parsers covering
+all seven targeted tools (esbuild, Vite/Rollup, webpack, Next.js,
+TypeScript pretty mode, Cargo, Go). Latest verified baseline:
+`npm test` passes with 134 tests; `npm run test:e2e` runs 13 end-to-end
 tests that drive the CLI binary against four fixture repositories. Latest
-pushed commit at this handoff: `a465287 Add reporter-aware structured
-parsers (Phase 3 item 2 foundation)` on `main`.
+pushed commit at this handoff: `92c8d13 Wire structured reporters into
+runCheckCommand for test runners` on `main`.
 
 Most recent completed work:
 
@@ -138,9 +140,18 @@ Most recent completed work:
     `test/structured-reporter.test.js` plus new wiring tests in
     `test/test-runner-detector.test.js` and
     `test/targeted-check-tools.test.js` lock the behavior in.
+  - `src/checks/check-parser.js` now has collectors for all seven
+    targeted build tools (esbuild, Vite/Rollup, webpack, Next.js,
+    TypeScript pretty mode, Cargo, Go) producing the standard
+    `errors[]` record with `{source, file, line, column, severity,
+    code?, message}` plus tool-specific fields. Locked in by
+    hand-crafted golden fixtures under
+    `test/fixtures/check-output/build-errors/` and a per-tool test
+    suite that also verifies parsers compose cleanly when multiple
+    tools' output appears in the same run.
   - Still TBD for item 2: pytest JUnit wiring (needs tmp-file
-    capture), ESLint structured wiring, build-error parsers, and
-    failed-test → source mapping.
+    capture), ESLint structured wiring, and failed-test → source
+    mapping via the code index.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -164,14 +175,13 @@ Where we left off:
 
 Next recommended work:
 
-1. Continue Phase 3 item 2: add build-error parsers for Vite/Rollup,
-   esbuild, webpack, Next.js, `tsc`, Cargo, and Go (the next chunk of
-   structured parsing depth). Also wire pytest JUnit (needs tmp-file
-   capture) and ESLint structured parsing.
-2. After build-error depth, the failed-test → source mapping (walk
-   imports from the failing test file via the code index) and the
-   repair-loop wiring that feeds structured failures into
-   `model.repair`.
+1. Continue Phase 3 item 2: add the failed-test → source mapping
+   (walk imports from the failing test file via the code index, rank
+   candidate source files, surface the ranked list under
+   `likely_relevant_files` with provenance). Then wire pytest JUnit
+   (needs tmp-file capture) and ESLint structured parsing.
+2. After that, the repair-loop wiring that feeds the new structured
+   failure shape into `model.repair`.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 

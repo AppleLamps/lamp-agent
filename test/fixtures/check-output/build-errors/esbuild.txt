@@ -1,0 +1,15 @@
+✘ [ERROR] Could not resolve "missing-pkg"
+
+    src/foo.ts:3:23:
+      3 │ import { x } from "missing-pkg";
+        ╵                    ~~~~~~~~~~~~
+
+  You can mark the path "missing-pkg" as external to exclude it from the bundle.
+
+✘ [ERROR] Unexpected end of file
+
+    src/bar.ts:42:0:
+      42 │
+         ╵ ^
+
+1 error

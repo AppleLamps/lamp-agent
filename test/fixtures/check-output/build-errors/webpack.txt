@@ -1,0 +1,18 @@
+> repo@1.0.0 build
+> webpack --mode production
+
+asset main.bundle.js 542 bytes [emitted] (name: main)
+
+ERROR in ./src/foo.ts:5:7
+TS2304: Cannot find name 'foo'.
+    3 | export function bar() {
+    4 |   const x = 1;
+  > 5 |   foo();
+      |   ^^^
+    6 |   return x;
+    7 | }
+
+ERROR in ./src/components/Button.tsx
+Module not found: Error: Can't resolve '../missing' in '/repo/src/components'
+
+webpack 5.92.0 compiled with 2 errors in 1234 ms

@@ -1,0 +1,24 @@
+  vite v5.2.0 building for production...
+✓ 12 modules transformed.
+
+[plugin:vite:react] /repo/src/components/Button.tsx (24:13)
+Failed to parse JSX: Unexpected token, expected ","
+
+    22 | export function Button(props: ButtonProps) {
+    23 |   return (
+  > 24 |     <div className=props.className>
+       |             ^
+    25 |       {props.children}
+    26 |     </div>
+    27 |   );
+
+[plugin:vite:import-analysis] /repo/src/main.ts (3:18)
+Failed to resolve import "./missing" from "src/main.ts"
+
+    1 | import "./styles.css";
+    2 |
+  > 3 | import { x } from "./missing";
+      |                    ^^^^^^^^^^^
+
+error during build:
+RollupError: Build failed.

@@ -1,0 +1,15 @@
+src/foo.ts:5:7 - error TS2304: Cannot find name 'undefinedSymbol'.
+
+5   undefinedSymbol();
+        ~~~~~~~~~~~~~~~
+
+src/bar.ts:12:14 - error TS2322: Type 'string' is not assignable to type 'number'.
+
+12   const x: number = "oops";
+                 ~
+
+Found 2 errors in 2 files.
+
+Errors  Files
+     1  src/foo.ts:5
+     1  src/bar.ts:12
