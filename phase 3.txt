@@ -29,18 +29,26 @@ Current status:
   (which require committing node_modules or shimming the toolchain) and
   transient-retry / fallback-model coverage (which is OpenRouter-adapter
   internal behavior; needs a fake-fetch test).
-- [~] Stronger targeted checks and parsers (item 2) — foundation in
-  place: `src/checks/structured-reporter.js` has parsers for TAP v13
+- [~] Stronger targeted checks and parsers (item 2) — reporter-aware
+  parsing is now wired end-to-end for the test runners we have parsers
+  for. `src/checks/structured-reporter.js` has parsers for TAP v13
   (Node `--test`), Vitest JSON, Jest JSON, pytest JUnit XML, and ESLint
-  JSON, all returning the same shape as `parseCheckOutput` so the rest
-  of the harness is unchanged. Six golden-output fixtures in
-  `test/fixtures/check-output/` (two real captures from local Node and
-  pytest, four hand-crafted from documented schemas) lock the shapes
-  in via `test/structured-reporter.test.js`. Wiring into
-  `runCheckCommand` so the harness chooses the structured form when a
-  reporter is available is still TBD, and so are the build-error
-  parsers (Vite/Rollup, esbuild, webpack, Next.js, tsc, Cargo, Go) and
-  the failed-test → source mapping.
+  JSON, each returning the same shape as `parseCheckOutput` (with a
+  `parsed_source` tag added so the rest of the harness can tell which
+  path produced the record). The Vitest, Jest, and Node-test runner
+  descriptors in `src/checks/test-runner-detector.js` now expose a
+  `structuredReporter` object with the format name and reporter-flagged
+  command builders; `runCheckCommand` accepts a `structuredFormat`
+  option and tries the structured parser first, falling back to the
+  regex `parseCheckOutput` if structured parsing returns null. Six
+  golden-output fixtures in `test/fixtures/check-output/` lock the
+  parser shapes in via `test/structured-reporter.test.js`, and new
+  tests in `test/test-runner-detector.test.js` and
+  `test/targeted-check-tools.test.js` cover the descriptor change and
+  the runtime wiring. Still TBD for item 2: pytest JUnit wiring (needs
+  a tmp-file capture since pytest does not write JUnit to stdout),
+  ESLint structured wiring, build-error parsers (Vite/Rollup, esbuild,
+  webpack, Next.js, tsc, Cargo, Go), and failed-test → source mapping.
 - [ ] Pre-patch blast radius and edit preview (item 3) — not started.
 - [ ] Streaming wired into the CLI (item 4) — not started.
 - [ ] Multi-provider model adapters (item 5) — not started.
@@ -284,10 +292,20 @@ so the repair loop can edit the right thing.
         `expected`/`actual`, error severity, and rule names; verifies
         the dispatcher routes by format; verifies each parser returns
         `null` on malformed input.
-  - [ ] Wire into `runCheckCommand` so the harness picks the JSON/JUnit
+  - [~] Wire into `runCheckCommand` so the harness picks the JSON/JUnit
         reporter when the runner supports it, parses the structured
         output first, and falls back to the regex `parseCheckOutput`
         when the reporter is unavailable.
+        - [x] Vitest (`--reporter=json`), Jest (`--json`), and Node
+              `--test` (`--test-reporter=tap`) wired through
+              `runner.structuredReporter` and a new `structuredFormat`
+              option on `runCheckCommand`. Records carry a
+              `parsed_source` tag (`structured:<format>` or `regex`).
+        - [ ] pytest JUnit wiring — defer until we have tmp-file
+              capture, since pytest does not write JUnit XML to stdout.
+        - [ ] ESLint JSON wiring — `runLint` currently invokes the
+              user's lint script as-is; wiring needs either a separate
+              targeted runner or careful in-place transformation.
 - [ ] Build-error depth: parsers for Vite/Rollup, esbuild, webpack, Next.js,
   TypeScript build mode, Cargo, and Go build output. Each should produce the
   same `{ file, line, column, code, message }` shape used today.
@@ -315,6 +333,15 @@ so the repair loop can edit the right thing.
   `...\test\fixtures\...`).
 - Pytest's JUnit body uses `\r\n` line endings on Windows. The
   assertion-extraction regex must tolerate `\r?\n`.
+- Wiring a runner into the structured path means three things: add a
+  `structuredReporter` object to the runner descriptor in
+  `test-runner-detector.js` with the format name and reporter-flagged
+  command builders; ensure the format has a parser registered with
+  `parseStructuredOutput` in `structured-reporter.js`; then any caller
+  going through `pickRunnerCommand` in `runtime.js` will automatically
+  prefer the structured form. The fallback to regex is automatic when
+  the structured parser returns null, so a runner whose reporter
+  output is malformed in practice degrades gracefully.
 
 ### Definition Of Done
 

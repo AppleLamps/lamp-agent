@@ -70,7 +70,14 @@ export async function detectTestRunner(cwd) {
         version: allDeps["vitest"] || null,
         runFileCmd: (file) => `${bin} run ${quote(file)}`,
         runNameCmd: (name) => `${bin} run -t ${quote(name)}`,
-        runFileAndNameCmd: (file, name) => `${bin} run ${quote(file)} -t ${quote(name)}`
+        runFileAndNameCmd: (file, name) => `${bin} run ${quote(file)} -t ${quote(name)}`,
+        structuredReporter: {
+          format: "vitest-json",
+          runFileCmd: (file) => `${bin} run --reporter=json ${quote(file)}`,
+          runNameCmd: (name) => `${bin} run --reporter=json -t ${quote(name)}`,
+          runFileAndNameCmd: (file, name) =>
+            `${bin} run --reporter=json ${quote(file)} -t ${quote(name)}`
+        }
       };
     }
 
@@ -83,7 +90,13 @@ export async function detectTestRunner(cwd) {
         version: allDeps["jest"] || allDeps["@jest/core"] || null,
         runFileCmd: (file) => `${bin} ${quote(file)}`,
         runNameCmd: (name) => `${bin} -t ${quote(name)}`,
-        runFileAndNameCmd: (file, name) => `${bin} ${quote(file)} -t ${quote(name)}`
+        runFileAndNameCmd: (file, name) => `${bin} ${quote(file)} -t ${quote(name)}`,
+        structuredReporter: {
+          format: "jest-json",
+          runFileCmd: (file) => `${bin} --json ${quote(file)}`,
+          runNameCmd: (name) => `${bin} --json -t ${quote(name)}`,
+          runFileAndNameCmd: (file, name) => `${bin} --json ${quote(file)} -t ${quote(name)}`
+        }
       };
     }
 
@@ -109,7 +122,15 @@ export async function detectTestRunner(cwd) {
         runFileCmd: (file) => `node --test ${quote(file)}`,
         runNameCmd: (name) => `node --test --test-name-pattern=${quote(name)}`,
         runFileAndNameCmd: (file, name) =>
-          `node --test --test-name-pattern=${quote(name)} ${quote(file)}`
+          `node --test --test-name-pattern=${quote(name)} ${quote(file)}`,
+        structuredReporter: {
+          format: "tap",
+          runFileCmd: (file) => `node --test --test-reporter=tap ${quote(file)}`,
+          runNameCmd: (name) =>
+            `node --test --test-reporter=tap --test-name-pattern=${quote(name)}`,
+          runFileAndNameCmd: (file, name) =>
+            `node --test --test-reporter=tap --test-name-pattern=${quote(name)} ${quote(file)}`
+        }
       };
     }
   }

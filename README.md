@@ -56,12 +56,13 @@ The CLI renders a styled chat shell with:
 
 Core MVP and Phase 2 are implemented and tested. Phase 3 items 1 and 2
 are in progress: item 1 (real-repo fixtures and end-to-end CLI coverage)
-is almost done; item 2 (stronger targeted checks and parsers) has its
-structured-reporter foundation in place. Latest verified baseline:
-`npm test` passes with 122 tests; `npm run test:e2e` runs 13 end-to-end
+is almost done; item 2 (stronger targeted checks and parsers) has the
+structured-reporter foundation in place and the test-runner wiring done
+for Node `--test`, Vitest, and Jest. Latest verified baseline:
+`npm test` passes with 126 tests; `npm run test:e2e` runs 13 end-to-end
 tests that drive the CLI binary against four fixture repositories. Latest
-pushed commit at this handoff: `f195a93 Land Phase 3 roadmap and item 1
-end-to-end coverage` on `main`.
+pushed commit at this handoff: `a465287 Add reporter-aware structured
+parsers (Phase 3 item 2 foundation)` on `main`.
 
 Most recent completed work:
 
@@ -114,16 +115,32 @@ Most recent completed work:
     `*.test.{js,mjs,cjs}` files and skips `helpers/`/`fixtures/` so the
     fast and end-to-end suites both run cleanly under Node 24.
   - `npm test` (full suite) and `npm run test:e2e` (e2e only) scripts.
-- Phase 3 item 2 foundation: `src/checks/structured-reporter.js` has
-  parsers for TAP v13 (Node `--test`), Vitest JSON, Jest JSON, pytest
-  JUnit XML, and ESLint JSON. Each returns the same shape as
-  `parseCheckOutput`, returning `null` on non-matching input so callers
-  can fall back to the regex parser. Six golden-output fixtures live
-  under `test/fixtures/check-output/` (TAP captures from local Node and
-  pytest plus hand-crafted Vitest/Jest/ESLint samples), and
-  `test/structured-reporter.test.js` locks the shapes in. Wiring into
-  `runCheckCommand` so the harness chooses the structured form when a
-  reporter is available is the next step for item 2.
+- Phase 3 item 2 progress:
+  - `src/checks/structured-reporter.js` has parsers for TAP v13 (Node
+    `--test`), Vitest JSON, Jest JSON, pytest JUnit XML, and ESLint
+    JSON. Each returns the same shape as `parseCheckOutput`, returning
+    `null` on non-matching input so callers can fall back to the regex
+    parser.
+  - The test-runner descriptors in
+    `src/checks/test-runner-detector.js` now expose a
+    `structuredReporter` object on Vitest, Jest, and Node `--test`,
+    with the format name and reporter-flagged command builders.
+  - `runCheckCommand` accepts a `structuredFormat` option and tries
+    the structured parser first; it falls back to the regex parser
+    when the structured form returns null. Records carry a
+    `parsed_source` tag (`structured:<format>` or `regex`).
+  - `runTestFile`, `runTestName`, and `runRelatedTests` automatically
+    pick the structured-reporter command builder when the runner
+    exposes one.
+  - Six golden-output fixtures live under
+    `test/fixtures/check-output/` (TAP captures from local Node and
+    pytest plus hand-crafted Vitest/Jest/ESLint samples), and
+    `test/structured-reporter.test.js` plus new wiring tests in
+    `test/test-runner-detector.test.js` and
+    `test/targeted-check-tools.test.js` lock the behavior in.
+  - Still TBD for item 2: pytest JUnit wiring (needs tmp-file
+    capture), ESLint structured wiring, build-error parsers, and
+    failed-test → source mapping.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -147,14 +164,14 @@ Where we left off:
 
 Next recommended work:
 
-1. Continue Phase 3 item 2: wire the structured-reporter parsers into
-   `runCheckCommand` so the harness chooses the JSON/JUnit form when
-   the runner supports it (and falls back to the existing regex parser
-   otherwise). Then add build-error parsers for Vite/Rollup, esbuild,
-   webpack, Next.js, `tsc`, Cargo, and Go.
-2. After that, the failed-test → source mapping (walk imports from the
-   failing test file via the code index) and the repair-loop wiring
-   that feeds structured failures into `model.repair`.
+1. Continue Phase 3 item 2: add build-error parsers for Vite/Rollup,
+   esbuild, webpack, Next.js, `tsc`, Cargo, and Go (the next chunk of
+   structured parsing depth). Also wire pytest JUnit (needs tmp-file
+   capture) and ESLint structured parsing.
+2. After build-error depth, the failed-test → source mapping (walk
+   imports from the failing test file via the code index) and the
+   repair-loop wiring that feeds structured failures into
+   `model.repair`.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 

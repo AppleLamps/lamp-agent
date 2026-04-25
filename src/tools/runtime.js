@@ -6,6 +6,7 @@ import { createPermissionEngine } from "../permissions/permission-engine.js";
 import { applyFilePatch, parseUnifiedPatch } from "../patch/patch-engine.js";
 import { summarizeSnapshotDiff } from "../workspace/checkpoint.js";
 import { parseCheckOutput } from "../checks/check-parser.js";
+import { parseStructuredOutput } from "../checks/structured-reporter.js";
 import { detectTestRunner, findRelatedTestFiles } from "../checks/test-runner-detector.js";
 import { appendEvent } from "../log/event-log.js";
 import { buildCodeIndex, detectRoutes, findReferences as findReferencesIndex } from "../code/code-index.js";
@@ -384,16 +385,37 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
       };
     },
 
-    async runCheckCommand(checkType, command, activeTask = null) {
+    async runCheckCommand(checkType, command, activeTask = null, options = {}) {
       const result = await this.runCommand(command, `Run ${checkType}`, activeTask);
       if (!activeTask) return result;
-      const parsed = parseCheckOutput({
-        checkType,
-        command,
-        code: result.code,
-        stdout: result.stdout,
-        stderr: result.stderr
-      });
+      // Prefer the structured reporter when the caller declared one;
+      // fall back to the regex parser if structured parsing returns
+      // null (e.g. the runner emitted text instead of JSON because of a
+      // crash or because reporter flags were ignored).
+      let parsed = null;
+      let parsedSource = null;
+      if (options.structuredFormat) {
+        parsed = parseStructuredOutput({
+          format: options.structuredFormat,
+          checkType,
+          command,
+          code: result.code,
+          stdout: result.stdout,
+          stderr: result.stderr
+        });
+        if (parsed) parsedSource = `structured:${options.structuredFormat}`;
+      }
+      if (!parsed) {
+        parsed = parseCheckOutput({
+          checkType,
+          command,
+          code: result.code,
+          stdout: result.stdout,
+          stderr: result.stderr
+        });
+        parsedSource = parsedSource || "regex";
+      }
+      parsed.parsed_source = parsedSource;
       await recordCheckResult(activeTask, parsed, {
         stdout: result.stdout || "",
         stderr: result.stderr || ""
@@ -433,7 +455,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `No supported test runner detected. Cannot run targeted test for file: ${filePath}`
         };
       }
-      const command = runner.runFileCmd(filePath);
+      const { command, format } = pickRunnerCommand(runner, "runFileCmd", filePath);
       if (!command) {
         return {
           ok: false,
@@ -441,7 +463,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `Runner ${runner.runner} does not support targeted file execution.`
         };
       }
-      return this.runCheckCommand("test", command, activeTask);
+      return this.runCheckCommand("test", command, activeTask, { structuredFormat: format });
     },
 
     async runTestName(testName, activeTask = null) {
@@ -453,7 +475,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `No supported test runner detected. Cannot run targeted test: ${testName}`
         };
       }
-      const command = runner.runNameCmd(testName);
+      const { command, format } = pickRunnerCommand(runner, "runNameCmd", testName);
       if (!command) {
         return {
           ok: false,
@@ -461,7 +483,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `Runner ${runner.runner} does not support targeted test name execution.`
         };
       }
-      return this.runCheckCommand("test", command, activeTask);
+      return this.runCheckCommand("test", command, activeTask, { structuredFormat: format });
     },
 
     async runRelatedTests(changedFile, activeTask = null) {
@@ -488,11 +510,11 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
       const results = [];
       for (const testFile of related) {
-        const command = runner.runFileCmd(testFile);
+        const { command, format } = pickRunnerCommand(runner, "runFileCmd", testFile);
         if (!command) continue;
         results.push({
           file: testFile,
-          ...(await this.runCheckCommand("test", command, activeTask))
+          ...(await this.runCheckCommand("test", command, activeTask, { structuredFormat: format }))
         });
       }
 
@@ -794,6 +816,26 @@ async function insertAtMarker({ permissions, requestApproval, cwd, activeTask, r
     inserted_bytes: Buffer.byteLength(insertion)
   });
   return { ok: true, path: relativePath };
+}
+
+/**
+ * Pick the right command builder on a test-runner descriptor, preferring the
+ * structured-reporter form when the runner exposes one. Returns
+ * `{ command, format }` where `format` is non-null only when the
+ * structured form was picked.
+ */
+function pickRunnerCommand(runner, builderKey, ...args) {
+  const structured = runner?.structuredReporter?.[builderKey];
+  if (typeof structured === "function") {
+    const command = structured(...args);
+    if (command) return { command, format: runner.structuredReporter.format || null };
+  }
+  const plain = runner?.[builderKey];
+  if (typeof plain === "function") {
+    const command = plain(...args);
+    if (command) return { command, format: null };
+  }
+  return { command: null, format: null };
 }
 
 function runShell(command, cwd) {

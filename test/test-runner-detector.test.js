@@ -18,6 +18,63 @@ describe("detectTestRunner", () => {
       assert.equal(result.runner, "node");
       assert.match(result.runFileCmd("test/foo.test.js"), /node --test/);
       assert.match(result.runNameCmd("my test"), /--test-name-pattern/);
+      // Structured-reporter form is exposed for runners we have parsers
+      // for. Node uses TAP via --test-reporter=tap.
+      assert.equal(result.structuredReporter?.format, "tap");
+      assert.match(
+        result.structuredReporter.runFileCmd("test/foo.test.js"),
+        /--test-reporter=tap/
+      );
+      assert.match(
+        result.structuredReporter.runFileCmd("test/foo.test.js"),
+        /foo\.test\.js/
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes structured reporter forms for Jest and Vitest", async () => {
+    const jestDir = await mkdtemp(path.join(tmpdir(), "jest-struct-"));
+    try {
+      await writePkg(jestDir, {
+        scripts: { test: "jest" },
+        devDependencies: { jest: "^29.0.0" }
+      });
+      const jest = await detectTestRunner(jestDir);
+      assert.equal(jest.structuredReporter?.format, "jest-json");
+      assert.match(jest.structuredReporter.runFileCmd("src/foo.test.js"), /--json/);
+    } finally {
+      await rm(jestDir, { recursive: true, force: true });
+    }
+
+    const vitestDir = await mkdtemp(path.join(tmpdir(), "vitest-struct-"));
+    try {
+      await writePkg(vitestDir, {
+        scripts: { test: "vitest" },
+        devDependencies: { vitest: "^1.0.0" }
+      });
+      const vitest = await detectTestRunner(vitestDir);
+      assert.equal(vitest.structuredReporter?.format, "vitest-json");
+      assert.match(
+        vitest.structuredReporter.runFileCmd("src/foo.test.ts"),
+        /--reporter=json/
+      );
+    } finally {
+      await rm(vitestDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not expose a structured reporter for runners without a parser yet", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "mocha-struct-"));
+    try {
+      await writePkg(dir, {
+        scripts: { test: "mocha" },
+        devDependencies: { mocha: "^10.0.0" }
+      });
+      const result = await detectTestRunner(dir);
+      assert.equal(result.runner, "mocha");
+      assert.equal(result.structuredReporter, undefined);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
