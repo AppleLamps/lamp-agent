@@ -27,7 +27,11 @@ test("finalReview renders a plain-English review card", async () => {
 
     assert.match(review, /^Done\./);
     assert.match(review, /Changed:/);
+    assert.match(review, /Changed file reasons:/);
+    assert.match(review, /Blast radius:/);
     assert.match(review, /Warnings:/);
+    assert.match(review, /Warnings by severity:/);
+    assert.match(review, /Timeline:/);
     assert.match(review, /Next actions:/);
     assert.match(review, /see technical details/);
     assert.match(review, /open changed file list/);

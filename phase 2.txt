@@ -20,23 +20,20 @@ Current status:
 - [x] Apply-back conflict resolution (item 7) is complete.
 - [x] Better approval/review actions (item 8) are complete.
 - [x] Model adapter improvements (item 9) are complete.
+- [x] Better diff/review UX (item 10) is complete.
 
 Where we left off:
 
-- The last completed work completed **Model Adapter Improvements**:
-  - Added a formal adapter contract in `src/model/adapter-contract.js`.
-  - OpenRouter adapter now exposes provider capability flags for tool calling, JSON mode,
-    streaming, fallback models, usage support, and max context.
-  - OpenRouter calls retry transient failures (`429`, `5xx`, network/timeout-like errors).
-  - Fallback model configuration is supported through `model.fallbackModels`.
-  - Model usage/cost metadata is written to each task's `model-usage.jsonl` and `model_call`
-    events.
-  - Structured critique output is supported through JSON mode when enabled.
-  - Streaming text is available through the adapter's `streamText` hook.
-  - `/details` includes recorded model call count and cost.
-- Test suite is at 93 tests, all passing (5 total in `test/model-adapter.test.js`).
-- The next AI should continue with **Better Diff And Review UX** (item 10) unless the
-  user redirects.
+- The last completed work completed **Better Diff And Review UX**:
+  - Added `src/review/review-summary.js`.
+  - Final review cards now include changed-file reasons, grouped by file.
+  - Review cards include blast radius with risk, scope, and verification summary.
+  - Failed/skipped check output snippets are included when available.
+  - Warnings are grouped by severity.
+  - Task timeline combines phase state and key task events.
+- Test suite is at 97 tests, all passing.
+- Phase 2 roadmap items are now complete. Next work should be chosen from a new Phase 3
+  capability roadmap unless the user redirects.
 
 Useful verification command:
 
@@ -69,6 +66,8 @@ The harness now has the core safe coding-agent loop:
 - Model adapter contract, provider capability flags, transient retry, fallback model
   configuration, structured critique output, streaming text hook, and per-task usage/cost
   tracking.
+- Better diff/review UX with changed-file reasons, blast radius, check snippets,
+  severity-grouped warnings, and task timeline.
 
 Phase 2 should focus on agent capability: helping the model find the right code, understand failures, iterate safely, and deliver working changes more often.
 
@@ -447,7 +446,7 @@ The harness can swap model providers without rewriting task logic.
 
 ## 10. Better Diff And Review UX
 
-Status: partially implemented.
+Status: complete.
 
 Already implemented:
 
@@ -458,21 +457,19 @@ Already implemented:
 - [x] next actions
 - [x] basic snapshot diff summary
 
-Still pending:
-
 ### Goal
 
 Make review useful for nontechnical users and detailed enough for developers.
 
 ### Add
 
-- [ ] richer summarized diff grouped by file
+- [x] richer summarized diff grouped by file
 - [x] basic technical diff command/view via `/diff`
-- [ ] blast radius summary
-- [ ] changed file reasons
-- [ ] warnings grouped by severity
-- [ ] check output snippets
-- [ ] task timeline
+- [x] blast radius summary
+- [x] changed file reasons
+- [x] warnings grouped by severity
+- [x] check output snippets
+- [x] task timeline
 
 ### Definition Of Done
 
@@ -497,7 +494,7 @@ The final review should answer:
 7. ~~Apply-back conflict resolution.~~ **Done.**
 8. ~~Better approval/review actions.~~ **Done.**
 9. ~~Model adapter improvements.~~ **Done.**
-10. Better diff and review UX. ← **Next.**
+10. ~~Better diff and review UX.~~ **Done.**
 
 ---
 
@@ -527,4 +524,4 @@ The agent should:
 
 Remaining gaps before Phase 2 is fully done:
 
-- Better diff/review UX (item 10): diff is technical only; no blast radius or grouped file reasons.
+- None. Phase 2 roadmap items are complete.

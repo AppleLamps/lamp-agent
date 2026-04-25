@@ -58,19 +58,16 @@ Core MVP is implemented and tested. Phase 2 has started.
 
 Most recent completed work:
 
-- model adapter hardening:
-  - formal adapter contract in `src/model/adapter-contract.js`
-  - OpenRouter capability flags for tool calling, JSON mode, streaming, fallback models, usage, and max context
-  - transient provider retries for `429`, `5xx`, and network/timeout-like failures
-  - fallback model configuration through `model.fallbackModels`
-  - per-task `model-usage.jsonl` plus `model_call` events for usage/cost tracking
-  - structured critique output through JSON mode when enabled
-  - streaming text through the adapter's `streamText` hook
-  - `/details` reports recorded model call count and cost
+- better diff and review UX:
+  - final review cards include changed-file reasons grouped by file
+  - blast radius summarizes risk, scope, and verification state
+  - failed/skipped check output snippets are included when available
+  - warnings are grouped by severity
+  - task timeline combines phase state and key task events
 
 Next recommended work:
 
-1. Better diff and review UX
+1. Create a Phase 3 roadmap
 
 Useful commands for the next session:
 
@@ -113,6 +110,7 @@ Implemented:
 - styled CLI shell with boxed assistant responses, review cards, `/diff`, review actions, and interactive menus
 - OpenRouter tool-calling loop with network disabled by default
 - model adapter contract, capability flags, transient retry, fallback models, structured critique output, streaming text, and usage/cost artifacts
+- better diff/review UX with changed-file reasons, blast radius, check snippets, severity-grouped warnings, and task timeline
 - approval prompts for risky path and command boundaries
 - local fallback response when model network calls are disabled
 
@@ -120,7 +118,7 @@ Known gaps:
 
 - targeted check runner is still basic
 - code intelligence is regex-based; no language-server depth (e.g. cross-file binding resolution)
-- diff/review UX is still basic for nontechnical summaries and blast-radius detail
+- Phase 2 roadmap is complete; future work should be planned as Phase 3
 
 ## Shadow Workspace
 

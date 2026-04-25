@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { summarizeBeliefs } from "../task/beliefs.js";
 import { summarizeProjectMemory } from "../memory/project-memory.js";
+import { buildReviewSummary } from "./review-summary.js";
 
 export async function summarizeProject(tools, projectMemory = null) {
   const listed = await tools.listFiles(".");
@@ -44,19 +45,20 @@ export async function finalReview(activeTask, tools, response, critique = null) 
     : await tools.runAvailableChecks(activeTask);
   const diff = await tools.taskDiff(activeTask);
   const beliefs = await summarizeBeliefs(activeTask);
+  const summary = await buildReviewSummary({ activeTask, changed, checks, diff, critique, beliefs });
   const checkLines = checks.map((check) => {
     if (check.skipped) return `Skipped ${check.name}: ${check.message}`;
     return `${check.name}: ${check.ok ? "passed" : "failed"}`;
   });
 
-  const lines = buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs });
+  const lines = buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs, summary });
 
   const review = lines.join("\n");
   await writeFile(path.join(activeTask.dir, "final-summary.md"), `${response.message}\n\n${review}\n`);
   return review;
 }
 
-function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs }) {
+function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs, summary }) {
   const warningLines = warningsFrom({ checks, critique, beliefs });
   return [
     "Done.",
@@ -64,11 +66,20 @@ function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs 
     "Changed:",
     ...(changed.length ? changed.map((file) => `- ${file}`) : ["- No files changed"]),
     "",
+    "Changed file reasons:",
+    ...formatFileReasons(summary.fileReasons),
+    "",
+    "Blast radius:",
+    `- Risk: ${summary.blastRadius.risk}`,
+    `- Scope: ${summary.blastRadius.labels.join(", ")}`,
+    `- Verification: ${summary.blastRadius.verification}`,
+    "",
     "Diff:",
     `- ${formatDiffSummary(diff)}`,
     "",
     "Checks:",
     ...(checkLines.length ? checkLines.map((line) => `- ${line}`) : ["- No checks run"]),
+    ...(summary.checkSnippets.length ? ["", "Check snippets:", ...formatCheckSnippets(summary.checkSnippets)] : []),
     "",
     "Review:",
     `- ${formatCritiqueSummary(critique)}`,
@@ -76,6 +87,12 @@ function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs 
     "",
     "Warnings:",
     ...(warningLines.length ? warningLines.map((line) => `- ${line}`) : ["- None"]),
+    "",
+    "Warnings by severity:",
+    ...formatWarningsBySeverity(summary.warnings),
+    "",
+    "Timeline:",
+    ...formatTimeline(summary.timeline),
     "",
     "Next actions:",
     "- accept",
@@ -87,6 +104,32 @@ function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs 
     "- resolve conflicts",
     "- cancel task"
   ];
+}
+
+function formatFileReasons(fileReasons) {
+  if (!fileReasons.length) return ["- No changed files"];
+  return fileReasons.map((file) => `- ${file.path}: ${file.reasons.join("; ")}`);
+}
+
+function formatCheckSnippets(snippets) {
+  return snippets.flatMap((snippet) => [
+    `- ${snippet.name}: ${snippet.summary || snippet.status}`,
+    ...snippet.lines.map((line) => `  ${line}`)
+  ]);
+}
+
+function formatWarningsBySeverity(warnings) {
+  const lines = [];
+  for (const severity of ["error", "warning", "info"]) {
+    const entries = warnings[severity] || [];
+    lines.push(`- ${severity}: ${entries.length ? entries.join("; ") : "none"}`);
+  }
+  return lines;
+}
+
+function formatTimeline(timeline) {
+  if (!timeline.length) return ["- No task timeline recorded"];
+  return timeline.map((item) => `- ${item.at}: ${item.label}`);
 }
 
 function warningsFrom({ checks, critique, beliefs }) {
