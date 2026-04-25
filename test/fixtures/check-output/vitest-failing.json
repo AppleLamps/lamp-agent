@@ -1,0 +1,54 @@
+{
+  "numTotalTestSuites": 2,
+  "numPassedTestSuites": 1,
+  "numFailedTestSuites": 1,
+  "numTotalTests": 3,
+  "numPassedTests": 2,
+  "numFailedTests": 1,
+  "numPendingTests": 0,
+  "numTodoTests": 0,
+  "startTime": 1714003200000,
+  "success": false,
+  "testResults": [
+    {
+      "name": "/repo/src/auth/login.test.ts",
+      "status": "passed",
+      "startTime": 1714003200100,
+      "endTime": 1714003200200,
+      "assertionResults": [
+        {
+          "ancestorTitles": ["login"],
+          "fullName": "login > redirects on success",
+          "status": "passed",
+          "title": "redirects on success",
+          "duration": 12
+        }
+      ]
+    },
+    {
+      "name": "/repo/src/auth/session.test.ts",
+      "status": "failed",
+      "startTime": 1714003200300,
+      "endTime": 1714003200500,
+      "assertionResults": [
+        {
+          "ancestorTitles": ["session"],
+          "fullName": "session > rejects expired tokens",
+          "status": "passed",
+          "title": "rejects expired tokens",
+          "duration": 5
+        },
+        {
+          "ancestorTitles": ["session"],
+          "fullName": "session > refreshes near-expiry tokens",
+          "status": "failed",
+          "title": "refreshes near-expiry tokens",
+          "duration": 8,
+          "failureMessages": [
+            "AssertionError: expected 'expired' to equal 'fresh'\n    at /repo/src/auth/session.test.ts:42:18\n    at processTicksAndRejections (node:internal/process/task_queues:96:5)"
+          ]
+        }
+      ]
+    }
+  ]
+}

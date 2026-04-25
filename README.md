@@ -54,12 +54,14 @@ The CLI renders a styled chat shell with:
 
 ## Current Handoff Status
 
-Core MVP and Phase 2 are implemented and tested. Phase 3 has begun: item 1
-(real-repo fixtures and end-to-end CLI coverage) is almost done. Latest
-verified baseline: `npm test` passes with 110 tests; `npm run test:e2e`
-runs 13 end-to-end tests that drive the CLI binary against four fixture
-repositories. Latest pushed commit at this handoff: `957efa5 Update handoff
-documentation` on `main`.
+Core MVP and Phase 2 are implemented and tested. Phase 3 items 1 and 2
+are in progress: item 1 (real-repo fixtures and end-to-end CLI coverage)
+is almost done; item 2 (stronger targeted checks and parsers) has its
+structured-reporter foundation in place. Latest verified baseline:
+`npm test` passes with 122 tests; `npm run test:e2e` runs 13 end-to-end
+tests that drive the CLI binary against four fixture repositories. Latest
+pushed commit at this handoff: `f195a93 Land Phase 3 roadmap and item 1
+end-to-end coverage` on `main`.
 
 Most recent completed work:
 
@@ -112,6 +114,16 @@ Most recent completed work:
     `*.test.{js,mjs,cjs}` files and skips `helpers/`/`fixtures/` so the
     fast and end-to-end suites both run cleanly under Node 24.
   - `npm test` (full suite) and `npm run test:e2e` (e2e only) scripts.
+- Phase 3 item 2 foundation: `src/checks/structured-reporter.js` has
+  parsers for TAP v13 (Node `--test`), Vitest JSON, Jest JSON, pytest
+  JUnit XML, and ESLint JSON. Each returns the same shape as
+  `parseCheckOutput`, returning `null` on non-matching input so callers
+  can fall back to the regex parser. Six golden-output fixtures live
+  under `test/fixtures/check-output/` (TAP captures from local Node and
+  pytest plus hand-crafted Vitest/Jest/ESLint samples), and
+  `test/structured-reporter.test.js` locks the shapes in. Wiring into
+  `runCheckCommand` so the harness chooses the structured form when a
+  reporter is available is the next step for item 2.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -135,14 +147,14 @@ Where we left off:
 
 Next recommended work:
 
-1. Finish Phase 3 item 1's last bullets: Vitest / Express+typecheck /
-   Next.js+build fixtures (these need either committed `node_modules` or
-   a thin shim that stands in for the real toolchain), and a fake-fetch
-   unit test for the OpenRouter adapter's transient-retry / fallback-model
-   behavior. These are smaller and more parser-shaped than what's
-   already done; consider folding them into Phase 3 item 2.
-2. Once item 1 is fully wrapped, item 2 (stronger targeted checks and
-   parsers) is the recommended next step.
+1. Continue Phase 3 item 2: wire the structured-reporter parsers into
+   `runCheckCommand` so the harness chooses the JSON/JUnit form when
+   the runner supports it (and falls back to the existing regex parser
+   otherwise). Then add build-error parsers for Vite/Rollup, esbuild,
+   webpack, Next.js, `tsc`, Cargo, and Go.
+2. After that, the failed-test → source mapping (walk imports from the
+   failing test file via the code index) and the repair-loop wiring
+   that feeds structured failures into `model.repair`.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 
@@ -284,6 +296,8 @@ before execution. Destructive command patterns are blocked.
 - `phase 2.txt`: completed Phase 2 roadmap, handoff status, and Phase 3 candidate list.
 - `phase 3.txt`: Phase 3 roadmap, with ten items, recommended build order, and Definition of Done.
 - `src/model/index.js`: pluggable model adapter factory (`createModelAdapter`); honors `LAMP_MODEL_ADAPTER` for tests and is the seam Phase 3 item 5 (multi-provider) will use.
+- `src/checks/structured-reporter.js`: reporter-aware parsers (TAP, Vitest JSON, Jest JSON, pytest JUnit XML, ESLint JSON) that produce the same record shape as `parseCheckOutput` and return null on mismatched input.
+- `test/fixtures/check-output/`: golden-output fixtures for the structured-reporter parsers (real captures and hand-crafted samples).
 - `scripts/run-tests.mjs`: explicit test-file enumerator used by `npm test` and `npm run test:e2e` (avoids Node 24 auto-discovery picking up helpers/fixtures).
 - `test/e2e/cli.test.js`: end-to-end CLI tests driving the binary against fixture repos.
 - `test/e2e/helpers/`: e2e CLI driver, fixture-copy helper, stub model adapter, and stub-script helper.

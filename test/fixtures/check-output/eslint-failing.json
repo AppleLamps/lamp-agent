@@ -1,0 +1,47 @@
+[
+  {
+    "filePath": "/repo/src/auth/login.ts",
+    "messages": [
+      {
+        "ruleId": "no-unused-vars",
+        "severity": 2,
+        "message": "'unused' is defined but never used.",
+        "line": 12,
+        "column": 7,
+        "nodeType": "Identifier",
+        "messageId": "unusedVar"
+      },
+      {
+        "ruleId": "@typescript-eslint/no-explicit-any",
+        "severity": 1,
+        "message": "Unexpected any. Specify a different type.",
+        "line": 24,
+        "column": 18
+      }
+    ],
+    "errorCount": 1,
+    "warningCount": 1,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0
+  },
+  {
+    "filePath": "/repo/src/auth/session.ts",
+    "messages": [],
+    "errorCount": 0,
+    "warningCount": 0
+  },
+  {
+    "filePath": "/repo/src/billing/invoice.ts",
+    "messages": [
+      {
+        "ruleId": "eqeqeq",
+        "severity": 2,
+        "message": "Expected '===' and instead saw '=='.",
+        "line": 7,
+        "column": 11
+      }
+    ],
+    "errorCount": 1,
+    "warningCount": 0
+  }
+]

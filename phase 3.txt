@@ -29,7 +29,18 @@ Current status:
   (which require committing node_modules or shimming the toolchain) and
   transient-retry / fallback-model coverage (which is OpenRouter-adapter
   internal behavior; needs a fake-fetch test).
-- [ ] Stronger targeted checks and parsers (item 2) — not started.
+- [~] Stronger targeted checks and parsers (item 2) — foundation in
+  place: `src/checks/structured-reporter.js` has parsers for TAP v13
+  (Node `--test`), Vitest JSON, Jest JSON, pytest JUnit XML, and ESLint
+  JSON, all returning the same shape as `parseCheckOutput` so the rest
+  of the harness is unchanged. Six golden-output fixtures in
+  `test/fixtures/check-output/` (two real captures from local Node and
+  pytest, four hand-crafted from documented schemas) lock the shapes
+  in via `test/structured-reporter.test.js`. Wiring into
+  `runCheckCommand` so the harness chooses the structured form when a
+  reporter is available is still TBD, and so are the build-error
+  parsers (Vite/Rollup, esbuild, webpack, Next.js, tsc, Cargo, Go) and
+  the failed-test → source mapping.
 - [ ] Pre-patch blast radius and edit preview (item 3) — not started.
 - [ ] Streaming wired into the CLI (item 4) — not started.
 - [ ] Multi-provider model adapters (item 5) — not started.
@@ -239,7 +250,8 @@ regression in any component is caught before it lands.
 
 ## 2. Stronger Targeted Checks And Parsers
 
-Status: not started.
+Status: in progress. Reporter-aware parsers are in; wiring and build-error
+depth remain.
 
 ### Goal
 
@@ -249,10 +261,33 @@ so the repair loop can edit the right thing.
 
 ### Add
 
-- [ ] Reporter-aware runners: when the runner supports it, prefer JSON output
+- [~] Reporter-aware runners: when the runner supports it, prefer JSON output
   (`vitest --reporter=json`, `jest --json`, `pytest --junit-xml`,
   `tsc --pretty false`, `eslint --format=json`) and parse the structured form
   before falling back to regex over stdout.
+  - [x] `src/checks/structured-reporter.js` exposes `parseStructuredOutput`
+        plus per-format `parseTap` / `parseVitestJson` / `parseJestJson` /
+        `parsePytestJUnit` / `parseEslintJson` functions. Each returns the
+        same `{ command, check_type, status, exit_code, failed_files,
+        failed_tests, errors, stack_traces, expected, actual,
+        likely_relevant_files, summary }` shape as `parseCheckOutput`,
+        and returns `null` on input that does not look like its target
+        format so callers can fall back to the existing regex parser.
+  - [x] Golden-output fixtures in `test/fixtures/check-output/`: real
+        captures (`node-tap-passing.txt`, `node-tap-failing.txt`,
+        `pytest-junit-failing.xml`) plus hand-crafted samples
+        (`vitest-failing.json`, `jest-failing.json`,
+        `eslint-failing.json`, `eslint-passing.json`) and a README
+        documenting how to refresh them.
+  - [x] `test/structured-reporter.test.js` verifies each parser pulls
+        the right `failed_tests`, `failed_files`, `stack_traces`,
+        `expected`/`actual`, error severity, and rule names; verifies
+        the dispatcher routes by format; verifies each parser returns
+        `null` on malformed input.
+  - [ ] Wire into `runCheckCommand` so the harness picks the JSON/JUnit
+        reporter when the runner supports it, parses the structured
+        output first, and falls back to the regex `parseCheckOutput`
+        when the reporter is unavailable.
 - [ ] Build-error depth: parsers for Vite/Rollup, esbuild, webpack, Next.js,
   TypeScript build mode, Cargo, and Go build output. Each should produce the
   same `{ file, line, column, code, message }` shape used today.
@@ -263,10 +298,23 @@ so the repair loop can edit the right thing.
   rank candidate source files, and surface the ranked list under
   `likely_relevant_files` with provenance (`stack`, `import-graph`,
   `co-located`).
-- [ ] Golden-output tests under `test/fixtures/check-output/` for each parser
+- [x] Golden-output tests under `test/fixtures/check-output/` for each parser
   so future regressions show up as diffs.
 - [ ] Repair loop changes that prefer the new structured failure shape and
   pass it into `model.repair` instead of free-form `parsed` blobs.
+
+### Notes for the next agent
+
+- Node's TAP reporter labels its output `TAP version 13` even though the
+  YAML diagnostic block uses TAP v14 conventions. Our parser accepts
+  either label.
+- Single-quoted YAML scalars in Node's TAP output emit `\\` for each
+  backslash in paths. Our `stripYamlQuotes` decodes that one Node-style
+  escape but deliberately does not decode `\n`/`\t` — applying those
+  would corrupt Windows paths that contain `\t` (e.g.
+  `...\test\fixtures\...`).
+- Pytest's JUnit body uses `\r\n` line endings on Windows. The
+  assertion-extraction regex must tolerate `\r?\n`.
 
 ### Definition Of Done
 

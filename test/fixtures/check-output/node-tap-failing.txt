@@ -1,0 +1,34 @@
+TAP version 13
+# Subtest: brokenAdd returns the correct sum
+not ok 1 - brokenAdd returns the correct sum
+  ---
+  duration_ms: 1.2463
+  type: 'test'
+  location: 'D:\\lamp-agent\\test\\fixtures\\node-builtin-test-failing\\specs\\main.mjs:5:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+    
+    4 !== 5
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: 5
+  actual: 4
+  operator: 'strictEqual'
+  stack: |-
+    TestContext.<anonymous> (file:///D:/lamp-agent/test/fixtures/node-builtin-test-failing/specs/main.mjs:7:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1103:25)
+    Test.start (node:internal/test_runner/test:1000:17)
+    startSubtestAfterBootstrap (node:internal/test_runner/harness:358:17)
+  ...
+1..1
+# tests 1
+# suites 0
+# pass 0
+# fail 1
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 72.2269

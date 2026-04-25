@@ -1,0 +1,22 @@
+TAP version 13
+# Subtest: add returns the sum of two numbers
+ok 1 - add returns the sum of two numbers
+  ---
+  duration_ms: 0.6405
+  type: 'test'
+  ...
+# Subtest: multiply returns the product of two numbers
+ok 2 - multiply returns the product of two numbers
+  ---
+  duration_ms: 0.1266
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 69.8534

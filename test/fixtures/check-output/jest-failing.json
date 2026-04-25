@@ -1,0 +1,27 @@
+{
+  "numTotalTests": 2,
+  "numPassedTests": 1,
+  "numFailedTests": 1,
+  "success": false,
+  "testResults": [
+    {
+      "name": "/repo/src/billing/invoice.test.js",
+      "status": "failed",
+      "assertionResults": [
+        {
+          "fullName": "invoice totals match line items",
+          "title": "totals match line items",
+          "status": "passed"
+        },
+        {
+          "fullName": "invoice rounding is bankers' rounding",
+          "title": "rounding is bankers' rounding",
+          "status": "failed",
+          "failureMessages": [
+            "Error: expect(received).toBe(expected) // Object.is equality\n\nExpected: 2.5\nReceived: 2.4\n    at Object.<anonymous> (/repo/src/billing/invoice.test.js:18:30)"
+          ]
+        }
+      ]
+    }
+  ]
+}

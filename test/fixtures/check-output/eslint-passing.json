@@ -1,0 +1,22 @@
+[
+  {
+    "filePath": "/repo/src/auth/login.ts",
+    "messages": [],
+    "errorCount": 0,
+    "warningCount": 0
+  },
+  {
+    "filePath": "/repo/src/auth/session.ts",
+    "messages": [
+      {
+        "ruleId": "prefer-const",
+        "severity": 1,
+        "message": "'foo' is never reassigned. Use 'const' instead.",
+        "line": 3,
+        "column": 5
+      }
+    ],
+    "errorCount": 0,
+    "warningCount": 1
+  }
+]

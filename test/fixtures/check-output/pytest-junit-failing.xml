@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="1" time="0.562" timestamp="2026-04-25T18:03:40.411236" hostname="DESKTOP-8AQKA19"><testcase classname="specs_pytest.check_calculator" name="test_broken_add_returns_the_correct_sum" time="0.104"><failure message="assert 4 == 5&#10; +  where 4 = broken_add(2, 3)">def test_broken_add_returns_the_correct_sum():
+        # Deliberately fails: broken_add is off by one.
+&gt;       assert broken_add(2, 3) == 5
+E       assert 4 == 5
+E        +  where 4 = broken_add(2, 3)
+
+specs_pytest\check_calculator.py:10: AssertionError</failure></testcase></testsuite></testsuites>
