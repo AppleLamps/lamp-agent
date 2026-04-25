@@ -54,18 +54,18 @@ The CLI renders a styled chat shell with:
 
 ## Current Handoff Status
 
-Core MVP and Phase 2 are implemented and tested. Phase 3 items 1 and 2
-are mostly done: item 1 (real-repo fixtures and end-to-end CLI
+Core MVP and Phase 2 are implemented and tested. Phase 3 items 1, 2,
+and 3 are in progress: item 1 (real-repo fixtures and end-to-end CLI
 coverage) covers a wide failure-mode surface; item 2 (stronger
-targeted checks and parsers) has the structured-reporter foundation,
-test-runner wiring for Node/Vitest/Jest, build-error parsers for all
-seven targeted tools, the failed-test → source mapping via the code
-index, and the repair-loop wiring that hands a compact structured
-failure shape to `model.repair`. Latest verified baseline: `npm test`
-passes with 148 tests; `npm run test:e2e` runs 13 end-to-end tests
-that drive the CLI binary against four fixture repositories. Latest
-pushed commit at this handoff: `8515879 Add failed-test -> source
-mapping via code index` on `main`.
+targeted checks and parsers) has structured reporters, build-error
+parsers, failed-test → source mapping, and repair-loop wiring; item 3
+(pre-patch blast radius and edit preview) has the planner, the
+warning surface, the edit-preview tool, the `/plan` shortcut, and the
+phase-controller gate. Latest verified baseline: `npm test` passes
+with 160 tests; `npm run test:e2e` runs 13 end-to-end tests that
+drive the CLI binary against four fixture repositories. Latest
+pushed commit at this handoff: `5531b10 Pass a compact structured
+failure summary to model.repair` on `main`.
 
 Most recent completed work:
 
@@ -168,6 +168,25 @@ Most recent completed work:
     (with raw-output paths, IDs, timestamps, etc.).
   - Still TBD for item 2: pytest JUnit wiring (needs tmp-file
     capture) and ESLint structured wiring.
+- Phase 3 item 3 progress:
+  - `src/task/pre-patch-plan.js` builds an `expected_scope` (candidate
+    files, risk labels, predicted checks), `danger_zones`
+    (avoid_touching, secret paths, lockfiles, dependency manifests),
+    and a `warnings` array. Warnings that the planner can prove cross
+    a danger-zone path are tagged `blocking: true`.
+  - The CLI's plan phase builds the plan, persists it as
+    `pre-patch-plan.json` under the task directory, prints a
+    `pre-patch warnings` card, and prompts the user before patch
+    begins when any warning is blocking. A `/plan` shortcut prints
+    the persisted plan; the phase controller now requires
+    `pre_patch_plan` as a plan-phase output.
+  - The runtime exposes `previewPatch(patch)` (a dry-run apply),
+    surfaced as the `preview_patch` model tool so the model can
+    validate a patch before committing it.
+  - The CLI driver's `respondToApproval` now tracks an offset
+    internally so consecutive prompts can be answered cleanly when
+    two boundaries fire in sequence (pre-patch warning + actual
+    operation).
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -191,14 +210,16 @@ Where we left off:
 
 Next recommended work:
 
-1. Item 3 (pre-patch blast radius and edit preview) is the next item
-   on the build order. Move blast-radius computation to before patch,
-   add an `edit-spec.json` artifact, and gate the patch phase on a
-   recorded pre-patch plan (analogous to the existing
-   `current_plan` / `risky_boundaries` gates).
-2. The remaining item 2 stragglers (pytest JUnit wiring, ESLint
-   structured wiring) are smaller and can land alongside item 3 or
-   later.
+1. Item 4 (streaming wired into the CLI). The adapter already exposes
+   `streamText`; wiring streamed text + streamed tool-call deltas
+   through `respond` and rendering progressively via `ui.assistant` is
+   the main piece, plus an `AbortController` so `cancel task` can
+   interrupt a stream mid-flight.
+2. Item 3 leftovers: a "preview" review action that shows the next
+   staged patch before apply, and richer pre-patch impact analysis
+   (rename / signature changes that ripple through the import graph).
+3. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring)
+   are smaller and can land alongside item 4 or later.
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 
@@ -341,6 +362,7 @@ before execution. Destructive command patterns are blocked.
 - `phase 3.txt`: Phase 3 roadmap, with ten items, recommended build order, and Definition of Done.
 - `src/model/index.js`: pluggable model adapter factory (`createModelAdapter`); honors `LAMP_MODEL_ADAPTER` for tests and is the seam Phase 3 item 5 (multi-provider) will use.
 - `src/checks/structured-reporter.js`: reporter-aware parsers (TAP, Vitest JSON, Jest JSON, pytest JUnit XML, ESLint JSON) that produce the same record shape as `parseCheckOutput` and return null on mismatched input.
+- `src/task/pre-patch-plan.js`: pre-patch planner that produces expected scope, danger zones, and blocking warnings before the patch phase begins.
 - `test/fixtures/check-output/`: golden-output fixtures for the structured-reporter parsers (real captures and hand-crafted samples).
 - `scripts/run-tests.mjs`: explicit test-file enumerator used by `npm test` and `npm run test:e2e` (avoids Node 24 auto-discovery picking up helpers/fixtures).
 - `test/e2e/cli.test.js`: end-to-end CLI tests driving the binary against fixture repos.

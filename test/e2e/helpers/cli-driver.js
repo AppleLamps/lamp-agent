@@ -30,6 +30,7 @@ export function spawnCli({ cwd, env = {} } = {}) {
 
   let stdout = "";
   let stderr = "";
+  let approvalOffset = 0;
   const stdoutListeners = new Set();
   let exited = false;
 
@@ -58,10 +59,19 @@ export function spawnCli({ cwd, env = {} } = {}) {
     stdout: () => stdout,
     stderr: () => stderr,
 
-    async expect(matcher, { timeout = DEFAULT_EXPECT_TIMEOUT_MS } = {}) {
+    async expect(matcher, { timeout = DEFAULT_EXPECT_TIMEOUT_MS, after = 0 } = {}) {
       const re = matcher instanceof RegExp ? matcher : new RegExp(escapeRegex(matcher));
-      const initial = re.exec(stdout);
-      if (initial) return { match: initial[0], stdout };
+      const search = (text) => {
+        if (!after) return re.exec(text);
+        const tail = text.slice(after);
+        const found = re.exec(tail);
+        if (!found) return null;
+        return { ...found, 0: found[0], index: (found.index || 0) + after, fromTail: true };
+      };
+      const initial = search(stdout);
+      if (initial) {
+        return { match: initial[0], stdout, end: (initial.index || 0) + initial[0].length };
+      }
       return new Promise((resolve, reject) => {
         let settled = false;
         const finish = (fn, value) => {
@@ -80,15 +90,16 @@ export function spawnCli({ cwd, env = {} } = {}) {
           ));
         }, timeout);
         const listener = (current) => {
-          const found = re.exec(current);
+          const found = search(current);
           if (!found) return;
-          finish(resolve, { match: found[0], stdout: current });
+          finish(resolve, { match: found[0], stdout: current, end: (found.index || 0) + found[0].length });
         };
         const onExit = (code, signal) => {
           // Fall through to a final stdout check first so we don't miss
           // a regex that landed in the same tick as the process exit.
-          if (re.exec(stdout)) {
-            finish(resolve, { match: re.exec(stdout)[0], stdout });
+          const tail = search(stdout);
+          if (tail) {
+            finish(resolve, { match: tail[0], stdout, end: (tail.index || 0) + tail[0].length });
             return;
           }
           finish(reject, new Error(
@@ -115,9 +126,16 @@ export function spawnCli({ cwd, env = {} } = {}) {
      * when an approval boundary is hit and the inquirer prompts are
      * unavailable (non-TTY stdin), then send a single-line answer such
      * as `yes`, `no`, `cancel`, or `alternative`.
+     *
+     * Tracks an offset internally so consecutive calls each wait for the
+     * *next* prompt rather than re-matching the stale tail of the
+     * previous one.
      */
     async respondToApproval(answer, opts = {}) {
-      await this.expect(/approval > $/, opts);
+      const result = await this.expect(/approval > $/, { ...opts, after: approvalOffset });
+      // Advance the offset past the prompt we just matched so the next
+      // call has to wait for new output.
+      approvalOffset = typeof result.end === "number" ? result.end : stdout.length;
       await this.sendLine(answer);
     },
 

@@ -250,6 +250,62 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
       return result;
     },
 
+    /**
+     * Project the effect of applying a unified diff without writing
+     * anything. Returns a per-file summary suitable for a "preview"
+     * surface (the upcoming `preview_patch` model tool and the
+     * eventual review-action preview). The check intentionally
+     * skips approval prompts — it never writes — but does still go
+     * through path classification so paths outside the workspace or
+     * obviously secret-bearing paths can be reported in the preview
+     * record without being read.
+     */
+    async previewPatch(patchText) {
+      let filePatches;
+      try {
+        filePatches = parseUnifiedPatch(patchText);
+      } catch (error) {
+        return { ok: false, message: error.message };
+      }
+      const previews = [];
+      for (const filePatch of filePatches) {
+        const relativePath = filePatch.path;
+        const decision = permissions.classifyPath(relativePath, "read");
+        if (decision.action === "blocked") {
+          previews.push({
+            path: relativePath,
+            ok: false,
+            blocked: true,
+            decision,
+            message: `Preview blocked by permission engine: ${decision.reason}`
+          });
+          continue;
+        }
+        try {
+          const before = await readWorkspaceFile(cwd, relativePath);
+          const after = applyFilePatch(before, filePatch);
+          const summary = computeDiffSummary(before, after);
+          previews.push({
+            path: relativePath,
+            ok: true,
+            decision,
+            status: !before && after ? "created" : (before && !after ? "deleted" : "modified"),
+            before_size: before.length,
+            after_size: after.length,
+            ...summary
+          });
+        } catch (error) {
+          previews.push({
+            path: relativePath,
+            ok: false,
+            decision,
+            message: error.message
+          });
+        }
+      }
+      return { ok: previews.every((entry) => entry.ok), previews };
+    },
+
     async applyPatchTracked(activeTask, patchText) {
       let filePatches;
       try {
@@ -846,6 +902,45 @@ async function insertAtMarker({ permissions, requestApproval, cwd, activeTask, r
  * `{ command, format }` where `format` is non-null only when the
  * structured form was picked.
  */
+function computeDiffSummary(before, after) {
+  const beforeLines = splitDiffLines(before);
+  const afterLines = splitDiffLines(after);
+  const max = Math.max(beforeLines.length, afterLines.length);
+  let added = 0;
+  let removed = 0;
+  let changed = 0;
+  const preview = [];
+  for (let index = 0; index < max; index += 1) {
+    const oldLine = beforeLines[index];
+    const newLine = afterLines[index];
+    if (oldLine === newLine) continue;
+    if (oldLine === undefined) {
+      added += 1;
+      pushPreviewLine(preview, `+${newLine}`);
+    } else if (newLine === undefined) {
+      removed += 1;
+      pushPreviewLine(preview, `-${oldLine}`);
+    } else {
+      changed += 1;
+      pushPreviewLine(preview, `-${oldLine}`);
+      pushPreviewLine(preview, `+${newLine}`);
+    }
+  }
+  return { added, removed, changed, preview };
+}
+
+function splitDiffLines(content) {
+  if (!content) return [];
+  const normalized = String(content).replace(/\r\n/g, "\n");
+  return normalized.endsWith("\n")
+    ? normalized.slice(0, -1).split("\n")
+    : normalized.split("\n");
+}
+
+function pushPreviewLine(preview, line) {
+  if (preview.length < 12) preview.push(line.length > 220 ? `${line.slice(0, 220)}...` : line);
+}
+
 function pickRunnerCommand(runner, builderKey, ...args) {
   const structured = runner?.structuredReporter?.[builderKey];
   if (typeof structured === "function") {

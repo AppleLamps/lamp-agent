@@ -54,9 +54,19 @@ test("phase controller enforces phase order and required outputs", async () => {
       project_summary: { fileCount: 1, notableFiles: ["package.json"] }
     });
     await controller.begin("plan");
+    // Plan completion now also requires a pre_patch_plan; missing it is
+    // a hard error.
+    await assert.rejects(
+      () => controller.complete("plan", {
+        current_plan: ["Inspect files"],
+        risky_boundaries: []
+      }),
+      /missing required output\(s\): pre_patch_plan/
+    );
     await controller.complete("plan", {
       current_plan: ["Inspect files"],
-      risky_boundaries: []
+      risky_boundaries: [],
+      pre_patch_plan: { expected_scope: { candidate_files: [], risk_labels: [], predicted_checks: [] } }
     });
 
     await assert.rejects(
@@ -85,7 +95,13 @@ test("phase controller records the full happy-path lifecycle", async () => {
     await controller.begin("triage");
     await controller.complete("triage", { project_summary: projectSummary });
     await controller.begin("plan");
-    await controller.complete("plan", { current_plan: currentPlan, risky_boundaries: riskyBoundaries });
+    await controller.complete("plan", {
+      current_plan: currentPlan,
+      risky_boundaries: riskyBoundaries,
+      pre_patch_plan: {
+        expected_scope: { candidate_files: [], risk_labels: [], predicted_checks: [] }
+      }
+    });
     await controller.begin("patch", {
       task_type: activeTask.task.task_type,
       project_summary: projectSummary,

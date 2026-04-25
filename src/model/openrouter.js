@@ -75,6 +75,20 @@ const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "preview_patch",
+      description: "Project the effect of applying a unified diff without writing anything. Returns a per-file summary (added/removed/changed line counts plus a short preview). Useful for validating a patch before commit, or for showing the user a staged view.",
+      parameters: {
+        type: "object",
+        required: ["patch"],
+        properties: {
+          patch: { type: "string", description: "Unified diff text." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "write_file",
       description: "Write a workspace file with snapshot tracking for undo. Use complete file content only when apply_patch is not practical.",
       parameters: {
@@ -890,6 +904,8 @@ async function executeTool(name, args, { tools, activeTask, allowedTools = null 
       return tools.searchFiles(args.query, args.glob);
     case "apply_patch":
       return tools.applyPatchTracked(activeTask, args.patch);
+    case "preview_patch":
+      return tools.previewPatch(args.patch);
     case "write_file":
       return tools.writeFileTracked(activeTask, args.path, args.content);
     case "create_file":

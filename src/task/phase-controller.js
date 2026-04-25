@@ -19,14 +19,14 @@ export const TASK_PHASES = {
   },
   plan: {
     status: "planning",
-    requiredOutputs: ["current_plan", "risky_boundaries"],
+    requiredOutputs: ["current_plan", "risky_boundaries", "pre_patch_plan"],
     allowedTools: [],
     next: "patch"
   },
   patch: {
     status: "patching",
     requiredOutputs: ["assistant_response"],
-    allowedTools: ["read_file", "search_files", "find_symbols", "find_definition", "find_references", "find_imports", "find_exports", "route_map", "apply_patch", "write_file", "create_file", "delete_file", "rename_file", "replace_range", "replace_exact", "insert_before", "insert_after", "run_command"],
+    allowedTools: ["read_file", "search_files", "find_symbols", "find_definition", "find_references", "find_imports", "find_exports", "route_map", "apply_patch", "preview_patch", "write_file", "create_file", "delete_file", "rename_file", "replace_range", "replace_exact", "insert_before", "insert_after", "run_command"],
     next: "verify"
   },
   verify: {
@@ -249,6 +249,10 @@ function hasOutput(outputs, name) {
   if (name === "project_summary") return Boolean(outputs.project_summary);
   if (name === "current_plan") return Array.isArray(outputs.current_plan) && outputs.current_plan.length > 0;
   if (name === "risky_boundaries") return Array.isArray(outputs.risky_boundaries);
+  if (name === "pre_patch_plan") {
+    const plan = outputs.pre_patch_plan;
+    return Boolean(plan && typeof plan === "object" && plan.expected_scope);
+  }
   if (name === "assistant_response") return Boolean(outputs.assistant_response);
   if (name === "verification_result") return Boolean(outputs.verification_result);
   if (name === "critique") return Boolean(outputs.critique);

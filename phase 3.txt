@@ -55,7 +55,24 @@ Current status:
   structured shape instead of the full audit record. Still TBD for
   item 2: pytest JUnit wiring (needs a tmp-file capture since pytest
   does not write JUnit to stdout) and ESLint structured wiring.
-- [ ] Pre-patch blast radius and edit preview (item 3) — not started.
+- [~] Pre-patch blast radius and edit preview (item 3) — most of the
+  surface is in place. `src/task/pre-patch-plan.js`'s
+  `buildPrePatchPlan` produces an `expected_scope` (candidate files,
+  risk labels, predicted checks), `danger_zones` (avoid_touching from
+  memory, secret paths, lockfiles, dependency manifests), and
+  `warnings` array. Each warning carries a `tier`, `severity`, and an
+  optional `blocking: true` flag set when the planner can prove the
+  candidate file set crosses a danger-zone path. The CLI's plan phase
+  builds the plan, persists `pre-patch-plan.json` to the task dir,
+  prints a "pre-patch warnings" card, and prompts the user before
+  patch begins when any warning is blocking. The phase controller now
+  requires `pre_patch_plan` as a plan-phase output. The runtime
+  exposes a `previewPatch(patch)` method (also surfaced as the
+  `preview_patch` model tool) that projects the diff without writing.
+  A `/plan` CLI shortcut prints the persisted plan. Still TBD for
+  item 3: a "preview" review action that shows the next staged patch
+  before apply, and richer pre-patch impact analysis (rename / signature
+  changes that would ripple through the import graph).
 - [ ] Streaming wired into the CLI (item 4) — not started.
 - [ ] Multi-provider model adapters (item 5) — not started.
 - [ ] Structured outputs beyond critique (item 6) — not started.
@@ -395,7 +412,8 @@ relevant source files, and the repair loop edits one of those files first.
 
 ## 3. Pre-Patch Blast Radius And Edit Preview
 
-Status: not started.
+Status: in progress. Plan, warning surface, edit-preview tool, and
+phase gate are landed; review-action preview is still pending.
 
 ### Goal
 
@@ -405,25 +423,46 @@ touch.
 
 ### Add
 
-- [ ] Move blast-radius computation in `src/review/review-summary.js` into a
+- [x] Move blast-radius computation in `src/review/review-summary.js` into a
   pre-patch path that runs after triage and before patch.
-- [ ] New phase-level artifact: `pre-patch-plan.json` containing inferred
-  affected files (from triage + code-index references), risk labels, predicted
+  Implementation: `src/task/pre-patch-plan.js` builds an
+  `expected_scope` from user-request keyword overlap, notable files,
+  and danger-zone auto-adds.
+- [x] New phase-level artifact: `pre-patch-plan.json` containing inferred
+  affected files (from triage + workspace files), risk labels, predicted
   verification (which targeted checks should run), and a list of files the
   model is expected to touch.
-- [ ] Edit-preview tool: dry-run variants of `apply_patch` and the edit
-  primitives that return the resulting diff without writing. Surface as a
-  `preview_patch` tool in the model adapter.
-- [ ] Pre-patch warning surface: when the planned edit set crosses
+- [x] Edit-preview tool: dry-run variants of `apply_patch` returning the
+  resulting diff without writing. Surfaced as `tools.previewPatch` and
+  the `preview_patch` model tool. The patch phase now allows
+  `preview_patch` so the model can validate a patch before commit.
+- [x] Pre-patch warning surface: when the planned edit set crosses
   `avoid_touching` from project memory, a secret path, a dependency manifest,
   or a checked-in lockfile, surface the warning and prompt for approval before
-  the patch phase begins.
-- [ ] CLI: a `/plan` shortcut that prints the current `pre-patch-plan.json`
-  and a "preview" review action that shows the next staged patch before
-  apply.
-- [ ] Phase controller gate: `patch` cannot begin until the pre-patch plan is
-  recorded (analogous to the existing `risky_boundaries` and `current_plan`
-  requirements).
+  the patch phase begins. Implemented via the `blocking: true` flag on
+  warnings; only blocking warnings prompt, others print as
+  informational context.
+- [x] CLI: a `/plan` shortcut that prints the current `pre-patch-plan.json`.
+  A "preview" review action that shows the next staged patch before
+  apply is still pending.
+- [x] Phase controller gate: `patch` cannot begin until the pre-patch plan is
+  recorded. Enforced by adding `pre_patch_plan` to
+  `TASK_PHASES.plan.requiredOutputs`.
+
+### Notes for the next agent
+
+- The CLI driver `respondToApproval(answer)` tracks an offset internally
+  so consecutive calls each wait for the *next* prompt, not the stale
+  tail of the previous one. This was needed once two approval prompts
+  could fire in sequence (pre-patch warning + actual operation).
+- `scanUserRequestSignals` deliberately splits its `.env` check out of
+  the `\b`-bounded keyword set: `\b` does not match between two
+  non-word characters (e.g. the space before `.env`), so the pattern
+  has to use a separate alternative.
+- The CLI passes the full workspace file list (not just
+  `notableFiles`) into `buildPrePatchPlan` via the `codeIndex.files`
+  argument — `notableFiles` filters out roots like `.env` that are
+  important for the secret-file blocker.
 
 ### Definition Of Done
 

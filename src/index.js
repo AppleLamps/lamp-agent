@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config/config.js";
 import { createTask, updateTaskStatus } from "./task/task-manager.js";
@@ -23,6 +23,7 @@ import { createInteractivePrompts } from "./ui/interactive.js";
 import { verifyAndRepair } from "./verify/repair-loop.js";
 import { refreshProjectMemory } from "./memory/project-memory.js";
 import { buildTaskPlan, identifyRiskyBoundaries, initializePhaseController, TASK_PHASES } from "./task/phase-controller.js";
+import { buildPrePatchPlan } from "./task/pre-patch-plan.js";
 
 const VERSION = "0.1.0";
 
@@ -72,6 +73,10 @@ async function main() {
     }
     if (line === "/files" || line.toLowerCase() === "open changed file list" || line.toLowerCase() === "changed files") {
       await printChangedFiles(activeTask, ui);
+      continue;
+    }
+    if (line === "/plan" || line.toLowerCase() === "see plan") {
+      await printPrePatchPlan(activeTask, ui);
       continue;
     }
     if (line === "/undo") {
@@ -136,6 +141,22 @@ async function main() {
     await phaseController.begin("plan");
     const currentPlan = buildTaskPlan({ userRequest: line, projectSummary });
     const riskyBoundaries = identifyRiskyBoundaries({ userRequest: line, projectSummary });
+    // Pull the full workspace file list so the planner sees danger
+    // zones outside `notableFiles` (for example, a `.env` at the root
+    // is filtered out of `notableFiles` but is still relevant for the
+    // secret-file blocking check).
+    const fullFileList = await activeTools.listFiles(".");
+    const prePatchPlan = buildPrePatchPlan({
+      userRequest: line,
+      projectSummary,
+      riskyBoundaries,
+      projectMemory: memoryResult.memory,
+      codeIndex: fullFileList?.ok ? { files: fullFileList.files } : null
+    });
+    await writeFile(
+      path.join(activeTask.dir, "pre-patch-plan.json"),
+      `${JSON.stringify(prePatchPlan, null, 2)}\n`
+    );
     await updateTaskStatus(activeTask, "planning", {
       current_plan: currentPlan,
       risk_level: riskyBoundaries.length ? "elevated" : "normal",
@@ -145,11 +166,44 @@ async function main() {
       type: "task_plan",
       message: "Task plan recorded before patch phase",
       current_plan: currentPlan,
-      risky_boundaries: riskyBoundaries
+      risky_boundaries: riskyBoundaries,
+      pre_patch_plan_summary: summarizePrePatchPlan(prePatchPlan)
     });
+    if (prePatchPlan.warnings?.length) {
+      // Always show the warnings to the user as informational context.
+      output.write(`${ui.card("pre-patch warnings", formatPrePatchWarnings(prePatchPlan))}\n`);
+      // Only block the patch phase for warnings the planner explicitly
+      // marked `blocking: true` — those are the cases where the
+      // candidate file set genuinely crosses a danger-zone path
+      // (avoid_touching, secret paths, dependency manifests,
+      // lockfiles). Generic risky-boundary tiers describe *operations*
+      // that the harness prompts on later when they run.
+      const blockingWarnings = prePatchPlan.warnings.filter((entry) => entry.blocking === true);
+      if (blockingWarnings.length) {
+        const proceed = await requestApproval(
+          { action: "ask", tier: "pre_patch_warning", reason: prePatchWarningReason(blockingWarnings) },
+          { taskId: activeTask.id }
+        );
+        if (!proceed.approved) {
+          await appendEvent(activeTask.dir, {
+            type: "pre_patch_plan_denied",
+            message: proceed.cancelled
+              ? "User cancelled the task at the pre-patch warning."
+              : proceed.alternative
+                ? "User asked for an alternative approach at the pre-patch warning."
+                : "User denied the pre-patch plan; task halted before patch.",
+            warnings: blockingWarnings
+          });
+          await updateTaskStatus(activeTask, proceed.cancelled ? "cancelled" : "halted_pre_patch");
+          output.write(`${ui.warning("Task halted before any files were touched.")}\n`);
+          continue;
+        }
+      }
+    }
     await phaseController.complete("plan", {
       current_plan: currentPlan,
-      risky_boundaries: riskyBoundaries
+      risky_boundaries: riskyBoundaries,
+      pre_patch_plan: prePatchPlan
     });
 
     await phaseController.begin("patch", {
@@ -259,6 +313,7 @@ Commands:
   /diff    Show the active task diff summary
   /details Show task artifacts and technical details
   /files   Show changed files for the active task
+  /plan    Show the pre-patch plan recorded for the active task
   /undo    Undo files changed by the last task, when snapshots exist
   /exit    Quit
 
@@ -439,6 +494,64 @@ async function handleUndo(activeTask, tools, ui) {
   output.write(`${result.ok ? ui.success(result.message) : ui.warning(result.message)}\n`);
 }
 
+async function printPrePatchPlan(activeTask, ui) {
+  if (!activeTask) {
+    output.write(`${ui.warning("There is no active task yet.")}\n`);
+    return;
+  }
+  const plan = await readJson(path.join(activeTask.dir, "pre-patch-plan.json"), null);
+  if (!plan) {
+    output.write(`${ui.warning("No pre-patch plan has been recorded for this task.")}\n`);
+    return;
+  }
+  output.write(`${ui.card("pre-patch plan", formatPrePatchPlan(plan))}\n`);
+}
+
+function formatPrePatchPlan(plan) {
+  const lines = [
+    `Task type: ${plan.task_type || "unknown"}`,
+    `Risk labels: ${(plan.expected_scope?.risk_labels || []).join(", ") || "none"}`,
+    `Predicted checks: ${(plan.expected_scope?.predicted_checks || []).join(", ") || "none"}`,
+    "",
+    "Candidate files:",
+    ...((plan.expected_scope?.candidate_files || []).length
+      ? plan.expected_scope.candidate_files.map((file) => `- ${file}`)
+      : ["- (none inferred)"]),
+    "",
+    "Danger zones:",
+    `- avoid_touching: ${(plan.danger_zones?.avoid_touching || []).join(", ") || "none"}`,
+    `- secret paths: ${(plan.danger_zones?.secret_paths || []).join(", ") || "none"}`,
+    `- lockfiles: ${(plan.danger_zones?.lockfiles || []).join(", ") || "none"}`,
+    `- dependency manifests: ${(plan.danger_zones?.dependency_manifests || []).join(", ") || "none"}`,
+    "",
+    "Warnings:",
+    ...((plan.warnings || []).length
+      ? plan.warnings.map((entry) => `- [${entry.severity}] ${entry.tier}: ${entry.message}`)
+      : ["- none"])
+  ];
+  return lines.join("\n");
+}
+
+function formatPrePatchWarnings(plan) {
+  if (!plan?.warnings?.length) return "No warnings.";
+  return plan.warnings.map((entry) => `- [${entry.severity}] ${entry.tier}: ${entry.message}`).join("\n");
+}
+
+function prePatchWarningReason(blockingWarnings) {
+  const tiers = (blockingWarnings || []).map((entry) => entry.tier);
+  return `The pre-patch plan flagged ${tiers.length} blocking warning${tiers.length === 1 ? "" : "s"} (${tiers.join(", ")}). Approve to proceed with the patch phase, or deny to halt before any files are touched.`;
+}
+
+function summarizePrePatchPlan(plan) {
+  return {
+    task_type: plan.task_type,
+    candidate_count: (plan.expected_scope?.candidate_files || []).length,
+    risk_labels: plan.expected_scope?.risk_labels || [],
+    warning_count: (plan.warnings || []).length,
+    warning_tiers: (plan.warnings || []).map((entry) => entry.tier)
+  };
+}
+
 async function printChangedFiles(activeTask, ui) {
   if (!activeTask) {
     output.write(`${ui.warning("There is no active task yet.")}\n`);
@@ -577,6 +690,9 @@ function describeApproval(decision, details) {
   }
   if (decision.tier === "external_publish") {
     return `This task wants to publish or push outside your local project by running: ${details.command}`;
+  }
+  if (decision.tier === "pre_patch_warning") {
+    return decision.reason;
   }
   return `${decision.reason}${details.command ? ` Command: ${details.command}` : ""}`;
 }

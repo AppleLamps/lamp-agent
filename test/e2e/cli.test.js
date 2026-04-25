@@ -336,6 +336,11 @@ test("e2e: stub adapter — dependency-change command triggers approval and is d
   try {
     await cli.expect(/Lamp Agent/);
     await cli.sendLine("Build a probe that asks to install a dependency.");
+    // The pre-patch planner will fire first because the user request
+    // mentions `install` + `dependency` and the fixture has a
+    // package.json/package-lock.json that lands in the candidate set.
+    // Approve the pre-patch warning, then deny the actual install.
+    await cli.respondToApproval("yes", { timeout: 30000 });
     await cli.respondToApproval("no", { timeout: 30000 });
     await cli.expect(/Next actions:/, { timeout: 60000 });
     await cli.sendLine("/exit");
@@ -354,8 +359,10 @@ test("e2e: stub adapter — dependency-change command triggers approval and is d
     assert.equal(installAttempt.decision?.action, "ask");
     assert.equal(installAttempt.decision?.tier, "dependency_change");
 
-    // The approval message should also appear on the assistant's stdout.
+    // The approval message should also appear on the assistant's stdout,
+    // and the pre-patch planner should have flagged a manifest blocker.
     assert.match(cli.stdout(), /change project dependencies/);
+    assert.match(cli.stdout(), /dependency_manifest/);
 
     const phases = JSON.parse(await readFile(path.join(taskDir, "phases.json"), "utf8"));
     assert.equal(phases.final_review?.state, "completed");
@@ -391,14 +398,19 @@ test("e2e: stub adapter — secret-file read triggers approval and is denied", a
   try {
     await cli.expect(/Lamp Agent/);
     await cli.sendLine("Build a probe that wants to read .env.");
+    // The pre-patch planner fires first because `.env` is in the
+    // candidate set. Approve it, then deny the actual secret read.
+    await cli.respondToApproval("yes", { timeout: 30000 });
     await cli.respondToApproval("no", { timeout: 30000 });
     await cli.expect(/Next actions:/, { timeout: 60000 });
     await cli.sendLine("/exit");
     const result = await cli.exit();
     assert.equal(result.code, 0);
 
-    // The approval prompt text should reference the secret-file boundary.
+    // The approval prompt text should reference the secret-file boundary,
+    // and the pre-patch planner should have flagged a secret_file blocker.
     assert.match(cli.stdout(), /may contain secrets/);
+    assert.match(cli.stdout(), /secret_file/);
 
     // Secrets must have been left unread by the harness; we can confirm by
     // checking that the .env file on disk is unchanged from what the test
