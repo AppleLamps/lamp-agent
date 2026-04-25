@@ -2,7 +2,10 @@
 
 ## Handoff Summary
 
-This file is the roadmap for making the agent more capable after the safe MVP.
+This file is the completed Phase 2 roadmap for making the agent more capable after
+the safe MVP. Future agents should treat Phase 2 as done and use this document as
+the handoff record for what was built, where the repo was left, and what should
+come next.
 
 Current status:
 
@@ -31,9 +34,13 @@ Where we left off:
   - Failed/skipped check output snippets are included when available.
   - Warnings are grouped by severity.
   - Task timeline combines phase state and key task events.
-- Test suite is at 97 tests, all passing.
+- Test suite is at 97 tests, all passing with `npm test`.
+- Latest pushed baseline at this handoff: `0a0d9c2 Improve final review UX` on
+  `main`.
 - Phase 2 roadmap items are now complete. Next work should be chosen from a new Phase 3
   capability roadmap unless the user redirects.
+- `.agent/` is intentionally ignored runtime state. Task artifacts, checkpoints,
+  conflict files, and project memory are generated locally and are not expected in git.
 
 Useful verification command:
 
@@ -69,7 +76,30 @@ The harness now has the core safe coding-agent loop:
 - Better diff/review UX with changed-file reasons, blast radius, check snippets,
   severity-grouped warnings, and task timeline.
 
-Phase 2 should focus on agent capability: helping the model find the right code, understand failures, iterate safely, and deliver working changes more often.
+Phase 2 focused on agent capability: helping the model find the right code,
+understand failures, iterate safely, and deliver working changes more often.
+
+## What Is Left
+
+No Phase 2 items remain. The next session should start by creating a Phase 3
+roadmap before implementing more features.
+
+Recommended Phase 3 candidates:
+
+1. Real language-server or deeper code intelligence: TypeScript/Python LSP support,
+   cross-file binding resolution, dependency graph, route maps, and component maps.
+2. Stronger targeted checks and parsers: framework-specific failure parsing, build
+   parser depth, and better failed-test-to-source mapping.
+3. Provider/model polish: wire streaming into the CLI, add broader provider adapters
+   beyond OpenRouter, and use structured outputs beyond critique.
+4. Productized task/session controls: stronger cancel-in-flight behavior,
+   alternate-approach flow, and resumable tasks.
+5. Safer multi-file/codebase operations: pre-patch blast radius, richer
+   merge/conflict strategy, and dependency-aware edits.
+6. GitHub/CI integration: PR creation, check status inspection, CI log repair, and
+   branch workflows.
+7. Hardening against real repos: fixture suites, end-to-end CLI tests, and more
+   failure-mode coverage.
 
 ---
 
