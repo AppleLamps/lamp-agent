@@ -245,6 +245,54 @@ export function createAnthropicAdapter(modelConfig = {}) {
       }
     },
 
+    /**
+     * Generic JSON-mode request. Anthropic does not accept an
+     * OpenAI-style `response_format`, so the system prompt asks for
+     * a single JSON object and the harness extracts it with the same
+     * tolerant parser used elsewhere.
+     */
+    async respondJson({ system, user, activeTask = null, purpose = "respond_json" }) {
+      const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
+      if (!apiKey || !modelConfig.allowNetwork) {
+        return {
+          ok: false,
+          message: apiKey && !modelConfig.allowNetwork
+            ? "Structured request skipped because network model calls are disabled."
+            : "Structured request skipped because Anthropic is not configured."
+        };
+      }
+      try {
+        const messages = [];
+        const systemMsg = [
+          system || "Respond with a single JSON object that matches the requested schema.",
+          "Return only the JSON object, with no commentary or markdown fences."
+        ].join("\n");
+        if (user) messages.push({ role: "user", content: typeof user === "string" ? user : JSON.stringify(user, null, 2) });
+        const body = await callAnthropicMessage({
+          apiKey,
+          modelConfig,
+          model: modelConfig.model,
+          messages,
+          system: systemMsg,
+          maxTokens: modelConfig.maxTokens || 1024
+        });
+        await recordModelUsage(activeTask, {
+          provider: "anthropic",
+          model: modelConfig.model,
+          purpose,
+          status: "ok",
+          usage: normalizeAnthropicUsage(body.usage)
+        });
+        const text = (body.content || []).filter((block) => block.type === "text").map((block) => block.text).join("");
+        const parsed = parseRawJson(text);
+        return parsed != null
+          ? { ok: true, raw: text, structured: parsed }
+          : { ok: false, raw: text, message: "Anthropic response was not valid JSON." };
+      } catch (error) {
+        return { ok: false, message: `Structured request failed: ${error.message}` };
+      }
+    },
+
     async critique(context) {
       const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
       if (!apiKey || !modelConfig.allowNetwork) {
@@ -472,6 +520,28 @@ function parseStructuredJson(content) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Extract a JSON value from arbitrary model text. Tolerant of leading
+ * commentary and markdown fences. Returns null when no JSON can be
+ * recovered.
+ */
+function parseRawJson(content) {
+  if (typeof content !== "string") return null;
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  try { return JSON.parse(trimmed); } catch { /* fall through */ }
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) {
+    try { return JSON.parse(fenced[1]); } catch { /* fall through */ }
+  }
+  const objStart = trimmed.indexOf("{");
+  const objEnd = trimmed.lastIndexOf("}");
+  if (objStart !== -1 && objEnd > objStart) {
+    try { return JSON.parse(trimmed.slice(objStart, objEnd + 1)); } catch { /* fall through */ }
+  }
+  return null;
 }
 
 function localFallback(userRequest, projectSummary, apiKey, allowNetwork) {

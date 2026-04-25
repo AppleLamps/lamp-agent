@@ -555,6 +555,47 @@ export function createOpenRouterAdapter(modelConfig) {
       }
     },
 
+    /**
+     * Generic JSON-mode request. The model is asked to respond with a
+     * single JSON object; the parsed value is returned alongside the
+     * raw text. When `capabilities.jsonMode` is false, the model is
+     * still asked for JSON via the system prompt and the harness tries
+     * to parse the resulting text — providers vary in how strictly
+     * they obey, so callers should validate the parsed value.
+     */
+    async respondJson({ system, user, activeTask = null, purpose = "respond_json", signal = null }) {
+      const apiKey = process.env[modelConfig.apiKeyEnv];
+      if (!apiKey || !modelConfig.allowNetwork) {
+        return {
+          ok: false,
+          message: apiKey && !modelConfig.allowNetwork
+            ? "Structured request skipped because network model calls are disabled."
+            : `Structured request skipped because ${modelConfig.provider || "the model"} is not configured.`
+        };
+      }
+      try {
+        const messages = [];
+        if (system) messages.push({ role: "system", content: system });
+        if (user) messages.push({ role: "user", content: typeof user === "string" ? user : JSON.stringify(user, null, 2) });
+        const body = await requestOpenRouter({
+          apiKey,
+          modelConfig,
+          activeTask,
+          purpose,
+          messages,
+          options: { tools: false, jsonMode: capabilities.jsonMode },
+          signal
+        });
+        const content = body.choices?.[0]?.message?.content || "";
+        const parsed = parseRawJson(content);
+        return parsed != null
+          ? { ok: true, raw: content, structured: parsed }
+          : { ok: false, raw: content, message: "Model response was not valid JSON." };
+      } catch (error) {
+        return { ok: false, message: `Structured request failed: ${error.message}` };
+      }
+    },
+
     async critique(context) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
@@ -1235,6 +1276,38 @@ function critiqueSystemPrompt(capabilities) {
       questions: ["Open question."]
     })
   ].join("\n");
+}
+
+/**
+ * Parse arbitrary JSON content the model returned. Tolerant of common
+ * provider quirks: leading/trailing chatter around the JSON object, and
+ * markdown fences. Returns the parsed value or null when no JSON can be
+ * extracted.
+ */
+function parseRawJson(content) {
+  if (typeof content !== "string") return null;
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+  // Try a direct parse first.
+  try { return JSON.parse(trimmed); } catch { /* fall through */ }
+  // Strip ```json ... ``` fences.
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) {
+    try { return JSON.parse(fenced[1]); } catch { /* fall through */ }
+  }
+  // Last resort: take the substring from the first `{` (or `[`) to the
+  // last matching brace.
+  const objStart = trimmed.indexOf("{");
+  const objEnd = trimmed.lastIndexOf("}");
+  if (objStart !== -1 && objEnd > objStart) {
+    try { return JSON.parse(trimmed.slice(objStart, objEnd + 1)); } catch { /* fall through */ }
+  }
+  const arrStart = trimmed.indexOf("[");
+  const arrEnd = trimmed.lastIndexOf("]");
+  if (arrStart !== -1 && arrEnd > arrStart) {
+    try { return JSON.parse(trimmed.slice(arrStart, arrEnd + 1)); } catch { /* fall through */ }
+  }
+  return null;
 }
 
 function parseStructuredJson(content) {

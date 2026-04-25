@@ -55,22 +55,16 @@ The CLI renders a styled chat shell with:
 ## Current Handoff Status
 
 Core MVP and Phase 2 are implemented and tested. Phase 3 items 1
-through 5 are in progress: item 1 (real-repo fixtures and end-to-end
-CLI coverage) covers a wide failure-mode surface; item 2 (stronger
-targeted checks and parsers) has structured reporters, build-error
-parsers, failed-test → source mapping, and repair-loop wiring; item 3
-(pre-patch blast radius and edit preview) has the planner, the
-warning surface, the edit-preview tool, the `/plan` shortcut, and
-the phase-controller gate; item 4 (streaming wired into the CLI)
-has the SSE plumbing, tool-call delta reassembly, cancellation via
-`AbortController`, and streamed-usage recording; item 5 (multi-
-provider model adapters) lands OpenAI, local, and Anthropic
-adapters dispatched by `model.provider` from the config. Latest
-verified baseline: `npm test` passes with 170 tests; `npm run
-test:e2e` runs 13 end-to-end tests that drive the CLI binary
-against four fixture repositories. Latest pushed commit at this
-handoff: `725d4df Wire streaming and cancel-in-flight into the CLI
-(Phase 3 item 4)` on `main`.
+through 6 are in progress. Items 1–5 (e2e coverage, parsers,
+pre-patch plan, streaming, multi-provider adapters) are described
+below; item 6 (structured outputs beyond critique) lands plan and
+edit-spec this round, with `plan.json` and `edit-spec.json`
+persisted alongside the existing critique artifact when the model
+supports JSON output. Latest verified baseline: `npm test` passes
+with 184 tests; `npm run test:e2e` runs 13 end-to-end tests that
+drive the CLI binary against four fixture repositories. Latest
+pushed commit at this handoff: `a321bb0 Add OpenAI, local, and
+Anthropic adapters (Phase 3 item 5)` on `main`.
 
 Most recent completed work:
 
@@ -226,6 +220,20 @@ Most recent completed work:
     existing `LAMP_MODEL_ADAPTER` test-stub override still wins.
   - Per-provider env var defaults: `OPENROUTER_API_KEY`,
     `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LAMP_LOCAL_API_KEY`.
+- Phase 3 item 6 progress (structured outputs beyond critique):
+  - `src/model/structured-output.js` defines `PLAN_SCHEMA`,
+    `EDIT_SPEC_SCHEMA`, and `REPAIR_FINDINGS_SCHEMA` plus a small
+    JSON-Schema-shaped validator and a system-prompt formatter.
+  - Each adapter (OpenAI-compatible and Anthropic) gained a
+    `respondJson({ system, user })` method that returns
+    `{ ok, structured?, raw }`.
+  - `src/task/structured-plan.js` and `src/task/edit-spec.js`
+    orchestrate the requests, validate, and persist `plan.json`
+    and `edit-spec.json` under the task directory. Failures fall
+    back silently (the heuristic plan and the existing patch flow
+    are unchanged).
+  - The CLI invokes both during the plan and patch phases when
+    `model.allowNetwork` is enabled.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -249,22 +257,21 @@ Where we left off:
 
 Next recommended work:
 
-1. Item 6 (structured outputs beyond critique). Use JSON-mode
-   responses for the plan, edit-spec, and repair-finding artifacts
-   so the harness validates structured shapes instead of free-form
-   text where supported.
-2. Item 5 leftovers: Anthropic prompt caching
-   (`anthropic-beta: prompt-caching-2024-07-31`), Anthropic
-   streaming inside `respond`/`repair`, and a live-network smoke
-   test gated on per-provider env vars.
-3. Item 4 leftovers: a streaming-aware `ui.assistant` variant that
-   renders tokens inline rather than as a progress message, and
+1. Item 7 (resumable tasks and cancel-in-flight). `cancel task` is
+   already wired (item 4); the next pieces are `/resume <task-id>`,
+   graceful Ctrl-C handling that captures partial state, the
+   alternate-approach re-entry from approval prompts, and a
+   `/tasks` listing.
+2. Item 6 leftovers: wire `repair_findings` so each repair attempt
+   produces a structured diagnosis the review surface can render.
+3. Item 5 leftovers: Anthropic prompt caching, Anthropic streaming
+   inside `respond`/`repair`, and a live-network smoke test gated
+   on per-provider env vars.
+4. Item 4 leftovers: a streaming-aware `ui.assistant` variant and
    streaming the repair loop's model calls.
-4. Item 3 leftovers: a "preview" review action that shows the next
-   staged patch before apply, and richer pre-patch impact analysis
-   (rename / signature changes that ripple through the import graph).
-5. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring)
-   are smaller and can land alongside any of the above.
+5. Item 3 leftovers: a "preview" review action and richer
+   pre-patch impact analysis.
+6. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring).
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 

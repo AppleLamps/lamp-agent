@@ -373,6 +373,88 @@ test("OpenRouter respond() returns cancelled:true when AbortController fires mid
   }
 });
 
+test("OpenRouter respondJson returns parsed structured JSON and tolerates fenced output", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-respondjson-"));
+  const activeTask = { id: "task-respondjson", dir: path.join(cwd, ".agent", "tasks", "task-respondjson") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    let body;
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "```json\n{\"summary\":\"ok\",\"steps\":[\"a\"]}\n```" } }],
+          usage: { total_tokens: 8 }
+        })
+      };
+    };
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "json/model",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      retryBaseDelayMs: 0,
+      capabilities: { jsonMode: true }
+    });
+
+    const result = await adapter.respondJson({
+      system: "Return JSON",
+      user: { hello: "world" },
+      activeTask
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.structured, { summary: "ok", steps: ["a"] });
+    assert.equal(body.response_format?.type, "json_object");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter respondJson reports failure when the model returns non-JSON", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: "I am not JSON, friend." } }]
+      })
+    });
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "json/model",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      retryBaseDelayMs: 0,
+      capabilities: { jsonMode: true }
+    });
+
+    const result = await adapter.respondJson({ system: "x", user: "x" });
+    assert.equal(result.ok, false);
+    assert.match(result.message, /not valid JSON/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+  }
+});
+
 test("OpenRouter streamText emits tokens from SSE chunks", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-model-stream-"));
   const activeTask = { id: "task-stream", dir: path.join(cwd, ".agent", "tasks", "task-stream") };

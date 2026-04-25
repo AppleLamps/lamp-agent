@@ -24,6 +24,8 @@ import { verifyAndRepair } from "./verify/repair-loop.js";
 import { refreshProjectMemory } from "./memory/project-memory.js";
 import { buildTaskPlan, identifyRiskyBoundaries, initializePhaseController, TASK_PHASES } from "./task/phase-controller.js";
 import { buildPrePatchPlan } from "./task/pre-patch-plan.js";
+import { requestStructuredPlan } from "./task/structured-plan.js";
+import { requestStructuredEditSpec } from "./task/edit-spec.js";
 
 const VERSION = "0.1.0";
 
@@ -157,6 +159,24 @@ async function main() {
       path.join(activeTask.dir, "pre-patch-plan.json"),
       `${JSON.stringify(prePatchPlan, null, 2)}\n`
     );
+
+    // Optionally enrich the heuristic plan with a model-generated
+    // structured plan. The CLI keeps the heuristic plan as the
+    // authoritative `current_plan` (it works offline and is fast); the
+    // structured plan is persisted as `plan.json` for review.
+    let modelPlan = null;
+    if (config.model.allowNetwork) {
+      const planResult = await requestStructuredPlan({
+        adapter: model,
+        userRequest: line,
+        projectSummary,
+        riskyBoundaries,
+        heuristicPlan: currentPlan,
+        activeTask
+      });
+      if (planResult.ok) modelPlan = planResult.plan;
+    }
+
     await updateTaskStatus(activeTask, "planning", {
       current_plan: currentPlan,
       risk_level: riskyBoundaries.length ? "elevated" : "normal",
@@ -167,7 +187,12 @@ async function main() {
       message: "Task plan recorded before patch phase",
       current_plan: currentPlan,
       risky_boundaries: riskyBoundaries,
-      pre_patch_plan_summary: summarizePrePatchPlan(prePatchPlan)
+      pre_patch_plan_summary: summarizePrePatchPlan(prePatchPlan),
+      model_plan_summary: modelPlan ? {
+        summary: modelPlan.summary,
+        step_count: modelPlan.steps?.length ?? 0,
+        risky_boundaries: modelPlan.risky_boundaries || []
+      } : null
     });
     if (prePatchPlan.warnings?.length) {
       // Always show the warnings to the user as informational context.
@@ -213,6 +238,26 @@ async function main() {
       current_plan: currentPlan,
       risky_boundaries: riskyBoundaries
     });
+
+    // Optionally request a structured edit-spec from the model
+    // BEFORE any patching happens. The spec is informational at this
+    // stage (the model may diverge during respond) but it's a useful
+    // preview and audit artifact — see `edit-spec.json` under the
+    // task dir.
+    if (config.model.allowNetwork) {
+      const specResult = await requestStructuredEditSpec({
+        adapter: model,
+        userRequest: line,
+        projectSummary,
+        currentPlan: modelPlan?.steps || currentPlan,
+        prePatchPlan,
+        activeTask
+      });
+      if (specResult.ok) {
+        output.write(`${ui.progress(`Model edit-spec recorded (${specResult.edit_spec.edits?.length || 0} planned edits, ${specResult.edit_spec.estimated_risk || "?"} risk)`)}\n`);
+      }
+    }
+
     let response;
     // An AbortController scoped to this task so `cancel task` (or
     // Ctrl-C) can interrupt an in-flight model request without

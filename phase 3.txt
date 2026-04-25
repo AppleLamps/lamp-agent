@@ -107,7 +107,21 @@ Current status:
   prompt-caching-2024-07-31`), Anthropic streaming inside
   `respond`/`repair`, and a live-network smoke test gated on
   per-provider env vars.
-- [ ] Structured outputs beyond critique (item 6) — not started.
+- [~] Structured outputs beyond critique (item 6) — plan and
+  edit-spec land this round. `src/model/structured-output.js` defines
+  `PLAN_SCHEMA`, `EDIT_SPEC_SCHEMA`, and `REPAIR_FINDINGS_SCHEMA`
+  plus a small JSON-Schema-shaped `validate()` and a
+  `describeSchema()` helper used to build system prompts. Each
+  adapter (OpenAI-compatible and Anthropic) gained a `respondJson({
+  system, user })` method that returns `{ok, structured?, raw}`.
+  `src/task/structured-plan.js` and `src/task/edit-spec.js`
+  orchestrate the requests, validate the response, persist
+  `plan.json` / `edit-spec.json` under the task dir on success, and
+  silently fall back when the model is unavailable, the response
+  isn't JSON, or schema validation fails. The CLI calls both during
+  the plan and patch phases. Still TBD: a structured
+  repair-findings flow (the schema is defined; the wiring is not),
+  and live-network smoke tests.
 - [ ] Resumable tasks and cancel-in-flight (item 7) — not started.
 - [ ] Dependency-aware edits and cross-file binding (item 8) — not started.
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
@@ -631,8 +645,8 @@ all artifact paths, phase behavior, and review output are unchanged.
 
 ## 6. Structured Outputs Beyond Critique
 
-Status: not started. Critique already uses JSON mode when the model supports
-it.
+Status: in progress. Plan and edit-spec land this round; repair-findings
+schema is defined but not wired.
 
 ### Goal
 
@@ -642,19 +656,42 @@ parse.
 
 ### Add
 
-- [ ] JSON-mode `plan` output: a structured plan schema (steps, risky
-  boundaries, expected files, expected checks) that replaces today's free-form
-  `current_plan` array when the model supports it.
-- [ ] JSON-mode `edit_spec` output: a list of edits the model intends to make
-  (`{ tool, path, args, intent }`), persisted as `edit-spec.json` and used
-  both for pre-patch blast radius (item 3) and for retry without re-thinking.
-- [ ] JSON-mode `repair_findings` output: structured form of what each repair
-  attempt diagnosed, with severity and proposed next action.
-- [ ] Schema validation on every structured response, with clear fallback to
-  text mode when validation fails.
-- [ ] Capability-gated: providers that do not advertise JSON mode keep using
-  the existing free-form path.
-- [ ] Test fixtures pinning each schema with an example response.
+- [x] JSON-mode `plan` output: `PLAN_SCHEMA` defined in
+  `src/model/structured-output.js`; the CLI plan phase requests a
+  structured plan via `requestStructuredPlan` (uses adapter
+  `respondJson`), validates it, and persists it as `plan.json` under
+  the task dir. The heuristic plan stays as the authoritative
+  `current_plan` for backward compat; the model plan augments it.
+- [x] JSON-mode `edit_spec` output: `EDIT_SPEC_SCHEMA` defined; the
+  CLI patch phase requests `requestStructuredEditSpec` BEFORE
+  `model.respond` runs, validates, and persists `edit-spec.json`.
+  The spec is informational at this stage — the model still does
+  its real work via tool calls — but it gives the user a preview
+  and the audit log a record of intent.
+- [ ] JSON-mode `repair_findings` output: schema is defined
+  (`REPAIR_FINDINGS_SCHEMA`), but the repair loop still returns the
+  free-form summarised failure. Wiring it through is the next step.
+- [x] Schema validation on every structured response. The validator
+  in `src/model/structured-output.js` returns
+  `{ ok, errors: [{ path, message }] }` and the helpers persist
+  artifacts only when validation passes. On failure they emit a
+  `structured_*_invalid` event and fall back silently.
+- [x] Capability-gated: `requestStructured*` short-circuits with
+  `source: "unsupported"` when the adapter has no `respondJson`,
+  and the CLI guards on `config.model.allowNetwork`.
+- [x] Test fixtures pinning each schema with an example response,
+  plus fake-fetch tests for the two adapters' `respondJson`.
+
+### Notes for the next agent
+
+- The validator is a small JSON-Schema subset (string / integer /
+  number / boolean / array / object / any) with `enum` and `pattern`
+  on strings, and `required` on objects. If you need richer features
+  (oneOf, anyOf, additionalProperties), grow the validator surgically
+  rather than reaching for a dependency.
+- The `parseRawJson` helper duplicated in OpenRouter and Anthropic
+  adapters tolerates markdown fences and leading commentary. If a
+  third adapter ever needs it, lift it into a shared module.
 
 ### Definition Of Done
 
