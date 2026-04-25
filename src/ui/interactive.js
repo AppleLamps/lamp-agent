@@ -25,6 +25,16 @@ export function createInteractivePrompts({ input = process.stdin, output = proce
             name: "Explain",
             value: "explain",
             description: "Show why the harness is asking."
+          },
+          {
+            name: "Choose another approach",
+            value: "alternative",
+            description: "Deny this operation and ask the agent to continue without it."
+          },
+          {
+            name: "Cancel task",
+            value: "cancel",
+            description: "Stop this task without approving the operation."
           }
         ]
       });
@@ -39,7 +49,11 @@ export function createInteractivePrompts({ input = process.stdin, output = proce
           { name: "Accept", value: "accept", description: "Keep the local result." },
           { name: "Adjust", value: "adjust", description: "Enter a follow-up request at the prompt." },
           { name: "See diff", value: "diff", description: "Show the active task diff summary." },
+          { name: "See technical details", value: "details", description: "Show task artifacts, checks, phases, and command log status." },
+          { name: "Open changed file list", value: "changed_files", description: "Show files tracked as changed for this task." },
+          { name: "Resolve apply-back conflict", value: "resolve_conflicts", description: "Resolve pending shadow apply-back conflicts." },
           { name: "Undo", value: "undo", description: "Restore tracked files from snapshots." },
+          { name: "Cancel task", value: "cancel_task", description: "Mark the active task canceled." },
           { name: "Continue chatting", value: "continue", description: "Return to the prompt." }
         ]
       });

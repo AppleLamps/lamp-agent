@@ -45,6 +45,34 @@ test("does not run blocked destructive commands even if approval would approve",
   }
 });
 
+test("approval denials preserve alternative and cancel intent", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-"));
+  try {
+    await writeFile(path.join(cwd, ".env"), "TOKEN=hidden\n");
+    const alternativeTools = createToolRuntime({
+      cwd,
+      config: config(),
+      requestApproval: async () => ({ approved: false, alternative: true, message: "Try another way." })
+    });
+    const alternative = await alternativeTools.readFile(".env");
+    assert.equal(alternative.ok, false);
+    assert.equal(alternative.alternative_requested, true);
+    assert.equal(alternative.message, "Try another way.");
+
+    const cancelTools = createToolRuntime({
+      cwd,
+      config: config(),
+      requestApproval: async () => ({ approved: false, cancelled: true, message: "Stop this task." })
+    });
+    const cancelled = await cancelTools.readFile(".env");
+    assert.equal(cancelled.ok, false);
+    assert.equal(cancelled.cancelled, true);
+    assert.equal(cancelled.message, "Stop this task.");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 function config() {
   return {
     permissions: {

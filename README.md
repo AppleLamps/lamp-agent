@@ -36,6 +36,8 @@ Inside the CLI:
 > What kind of project is this?
 > /status
 > /diff
+> /details
+> /files
 > /undo
 > /exit
 ```
@@ -56,18 +58,16 @@ Core MVP is implemented and tested. Phase 2 has started.
 
 Most recent completed work:
 
-- apply-back conflict resolution in `src/workspace/shadow-workspace.js`:
-  - shadow apply-back still blocks automatically if real workspace files changed
-  - conflicts include real and shadow summaries with metadata and previews
-  - each conflicted file can keep the real version, apply the shadow version, or save
-    the shadow version under `.agent/conflicts`
-  - clean changed files are applied while conflicted files follow explicit choices
-  - resolution artifacts are written to `apply-back-resolution.json` and `apply-back.json`
-  - interactive accept flow offers per-file conflict choices
+- better approval and review actions:
+  - approval prompts include `Choose another approach` and `Cancel task`
+  - tool results preserve alternate-approach and cancellation intent
+  - review menus include technical details, changed-file list, conflict resolution, and cancellation
+  - typed fallback commands include `/details`, `/files`, `resolve conflicts`, and `cancel task`
+  - final review cards list the expanded next actions
 
 Next recommended work:
 
-1. Better approval and review actions
+1. Model adapter improvements
 
 Useful commands for the next session:
 
@@ -106,6 +106,7 @@ Implemented:
 - shadow workspace apply-back on accept for tracked changed files
 - shadow apply-back conflict detection when real files changed during a task
 - shadow apply-back conflict resolution with keep/apply/save choices and `.agent/conflicts` artifacts
+- better approval/review actions with richer menus, typed fallbacks, technical details, changed-file lists, and task cancellation
 - styled CLI shell with boxed assistant responses, review cards, `/diff`, review actions, and interactive menus
 - OpenRouter tool-calling loop with network disabled by default
 - approval prompts for risky path and command boundaries
@@ -115,7 +116,7 @@ Known gaps:
 
 - targeted check runner is still basic
 - code intelligence is regex-based; no language-server depth (e.g. cross-file binding resolution)
-- approval/review actions still need `Choose another approach`, `Cancel task`, technical details, and changed-file list shortcuts
+- model adapter improvements are still pending: streaming, structured output, retries, fallback models, usage/cost tracking, and provider capability flags
 - diff/review UX is still basic for nontechnical summaries and blast-radius detail
 
 ## Shadow Workspace

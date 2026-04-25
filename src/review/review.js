@@ -81,7 +81,11 @@ function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs 
     "- accept",
     "- adjust",
     "- undo",
-    "- see diff"
+    "- see diff",
+    "- see technical details",
+    "- open changed file list",
+    "- resolve conflicts",
+    "- cancel task"
   ];
 }
 

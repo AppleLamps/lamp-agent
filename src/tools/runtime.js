@@ -658,8 +658,10 @@ function denied(permission) {
     ok: false,
     skipped: true,
     blocked: Boolean(permission.blocked),
+    cancelled: Boolean(permission.approval?.cancelled),
+    alternative_requested: Boolean(permission.approval?.alternative),
     decision: permission.decision,
-    message: permission.message || permission.decision.reason
+    message: permission.approval?.message || permission.message || permission.decision.reason
   };
 }
 

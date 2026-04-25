@@ -11,4 +11,5 @@ test("interactive prompts report unhandled when not in a TTY", async () => {
   assert.equal(prompts.interactive, false);
   assert.deepEqual(await prompts.approval({ message: "Allow?" }), { handled: false });
   assert.deepEqual(await prompts.reviewAction(), { handled: false });
+  assert.deepEqual(await prompts.conflictResolution({ path: "example.txt" }), { handled: false });
 });

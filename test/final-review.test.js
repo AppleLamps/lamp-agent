@@ -29,6 +29,9 @@ test("finalReview renders a plain-English review card", async () => {
     assert.match(review, /Changed:/);
     assert.match(review, /Warnings:/);
     assert.match(review, /Next actions:/);
+    assert.match(review, /see technical details/);
+    assert.match(review, /open changed file list/);
+    assert.match(review, /cancel task/);
 
     const finalSummary = await readFile(path.join(activeTask.dir, "final-summary.md"), "utf8");
     assert.match(finalSummary, /beliefs\.json/);

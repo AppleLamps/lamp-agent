@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { loadConfig } from "./config/config.js";
 import { createTask, updateTaskStatus } from "./task/task-manager.js";
 import { appendEvent } from "./log/event-log.js";
@@ -64,6 +66,14 @@ async function main() {
       await printDiff(activeTools, activeTask, ui);
       continue;
     }
+    if (line === "/details" || line.toLowerCase() === "see technical details" || line.toLowerCase() === "technical details") {
+      await printTechnicalDetails(activeTask, ui);
+      continue;
+    }
+    if (line === "/files" || line.toLowerCase() === "open changed file list" || line.toLowerCase() === "changed files") {
+      await printChangedFiles(activeTask, ui);
+      continue;
+    }
     if (line === "/undo") {
       await handleUndo(activeTask, activeTools, ui);
       continue;
@@ -78,6 +88,10 @@ async function main() {
     }
     if (line.toLowerCase() === "resolve conflicts") {
       await resolvePendingConflicts({ activeTask, rootTools: tools, prompts, setActiveTools: (next) => { activeTools = next; }, ui, cwd });
+      continue;
+    }
+    if (line.toLowerCase() === "cancel task") {
+      await cancelTask(activeTask, ui);
       continue;
     }
     if (line.toLowerCase().startsWith("adjust")) {
@@ -225,12 +239,17 @@ function printHelp(ui) {
 Commands:
   /status  Show workspace status and changed files
   /diff    Show the active task diff summary
+  /details Show task artifacts and technical details
+  /files   Show changed files for the active task
   /undo    Undo files changed by the last task, when snapshots exist
   /exit    Quit
 
 Review actions:
   accept
   resolve conflicts
+  see technical details
+  open changed file list
+  cancel task
   adjust <request>
   undo
   see diff
@@ -279,8 +298,24 @@ async function handleReviewAction({ prompts, tools, rootTools, activeTask, ui, c
     await printDiff(tools, activeTask, ui);
     return;
   }
+  if (action.choice === "details") {
+    await printTechnicalDetails(activeTask, ui);
+    return;
+  }
+  if (action.choice === "changed_files") {
+    await printChangedFiles(activeTask, ui);
+    return;
+  }
+  if (action.choice === "resolve_conflicts") {
+    await resolvePendingConflicts({ activeTask, rootTools, prompts, setActiveTools, ui, cwd });
+    return;
+  }
   if (action.choice === "undo") {
     await handleUndo(activeTask, tools, ui);
+    return;
+  }
+  if (action.choice === "cancel_task") {
+    await cancelTask(activeTask, ui);
   }
 }
 
@@ -386,6 +421,60 @@ async function handleUndo(activeTask, tools, ui) {
   output.write(`${result.ok ? ui.success(result.message) : ui.warning(result.message)}\n`);
 }
 
+async function printChangedFiles(activeTask, ui) {
+  if (!activeTask) {
+    output.write(`${ui.warning("There is no active task yet.")}\n`);
+    return;
+  }
+  const changed = await readJson(path.join(activeTask.dir, "changed-files.json"), []);
+  output.write(`${ui.card("changed files", changed.length ? changed.map((file) => `- ${file}`).join("\n") : "No changed files are tracked for this task.")}\n`);
+}
+
+async function printTechnicalDetails(activeTask, ui) {
+  if (!activeTask) {
+    output.write(`${ui.warning("There is no active task yet.")}\n`);
+    return;
+  }
+  const task = await readJson(path.join(activeTask.dir, "task.json"), {});
+  const changed = await readJson(path.join(activeTask.dir, "changed-files.json"), []);
+  const checks = await readJson(path.join(activeTask.dir, "check-results.json"), []);
+  const phases = await readJson(path.join(activeTask.dir, "phases.json"), {});
+  const verification = await readJson(path.join(activeTask.dir, "verification.json"), null);
+  const applyBack = await readJson(path.join(activeTask.dir, "apply-back.json"), null);
+  const conflicts = await readJson(path.join(activeTask.dir, "apply-back-conflicts.json"), null);
+  const commandLog = await readText(path.join(activeTask.dir, "commands.jsonl"), "");
+  const commandCount = commandLog.split(/\r?\n/).filter(Boolean).length;
+  const completedPhases = Object.values(phases).filter((phase) => phase.state === "completed").map((phase) => phase.phase);
+
+  const lines = [
+    `task: ${activeTask.id}`,
+    `status: ${task.status || "unknown"}`,
+    `type: ${task.task_type || "unknown"}`,
+    `risk: ${task.risk_level || "unknown"}`,
+    `changed files: ${changed.length}`,
+    `checks recorded: ${checks.length}`,
+    `commands recorded: ${commandCount}`,
+    `completed phases: ${completedPhases.length ? completedPhases.join(", ") : "none"}`,
+    `verification: ${verification?.status || "not recorded"}`,
+    `apply-back: ${applyBack?.ok === true ? "applied" : conflicts?.conflicts?.length ? "blocked by conflicts" : "not applied"}`,
+    `task dir: ${activeTask.dir}`
+  ];
+  output.write(`${ui.card("technical details", lines.join("\n"))}\n`);
+}
+
+async function cancelTask(activeTask, ui) {
+  if (!activeTask) {
+    output.write(`${ui.warning("There is no active task to cancel.")}\n`);
+    return;
+  }
+  await updateTaskStatus(activeTask, "cancelled");
+  await appendEvent(activeTask.dir, {
+    type: "task_cancelled",
+    message: "Task cancelled by user action"
+  });
+  output.write(`${ui.warning("Task cancelled. No push or deploy was performed.")}\n`);
+}
+
 function createApprovalPrompt(rl, approvals, ui, prompts) {
   return async function requestApproval(decision, details = {}) {
     const approvalKey = `${details.taskId || "global"}:${decision.tier}`;
@@ -400,9 +489,21 @@ function createApprovalPrompt(rl, approvals, ui, prompts) {
       if (interactive.choice === "explain") {
         output.write(`${ui.card("why this needs approval", approvalExplanation(plain))}\n`);
         const secondChoice = await prompts.approval({ message: plain, askEveryTime });
+        if (secondChoice.choice === "alternative") {
+          return { approved: false, alternative: true, message: "User requested another approach." };
+        }
+        if (secondChoice.choice === "cancel") {
+          return { approved: false, cancelled: true, message: "User cancelled the task." };
+        }
         const approvedAfterExplain = secondChoice.choice === "allow";
         if (approvedAfterExplain && !askEveryTime) approvals.set(approvalKey, true);
         return { approved: approvedAfterExplain };
+      }
+      if (interactive.choice === "alternative") {
+        return { approved: false, alternative: true, message: "User requested another approach." };
+      }
+      if (interactive.choice === "cancel") {
+        return { approved: false, cancelled: true, message: "User cancelled the task." };
       }
       const approvedChoice = interactive.choice === "allow";
       if (approvedChoice && !askEveryTime) approvals.set(approvalKey, true);
@@ -413,9 +514,21 @@ function createApprovalPrompt(rl, approvals, ui, prompts) {
     if (answer === "explain") {
       const explanation = approvalExplanation(plain);
       const secondAnswer = (await rl.question(`${ui.card("why this needs approval", explanation)}\napproval > `)).trim().toLowerCase();
+      if (isAlternativeAnswer(secondAnswer)) {
+        return { approved: false, alternative: true, message: "User requested another approach." };
+      }
+      if (isCancelAnswer(secondAnswer)) {
+        return { approved: false, cancelled: true, message: "User cancelled the task." };
+      }
       const approvedAfterExplain = secondAnswer === "y" || secondAnswer === "yes";
       if (approvedAfterExplain && !askEveryTime) approvals.set(approvalKey, true);
       return { approved: approvedAfterExplain };
+    }
+    if (isAlternativeAnswer(answer)) {
+      return { approved: false, alternative: true, message: "User requested another approach." };
+    }
+    if (isCancelAnswer(answer)) {
+      return { approved: false, cancelled: true, message: "User cancelled the task." };
     }
     const approved = answer === "y" || answer === "yes";
     if (approved && !askEveryTime) approvals.set(approvalKey, true);
@@ -461,6 +574,30 @@ function formatDetailedDiff(diff) {
     const preview = file.preview?.length ? `\n${file.preview.join("\n")}` : "";
     return `${file.path} (${file.status})\nadded: ${file.added}, removed: ${file.removed}, changed: ${file.changed}${preview}`;
   }).join("\n\n");
+}
+
+async function readJson(filePath, fallback) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+async function readText(filePath, fallback) {
+  try {
+    return await readFile(filePath, "utf8");
+  } catch {
+    return fallback;
+  }
+}
+
+function isAlternativeAnswer(answer) {
+  return answer === "alternative" || answer === "another" || answer === "choose another approach";
+}
+
+function isCancelAnswer(answer) {
+  return answer === "cancel" || answer === "cancel task";
 }
 
 main().catch((error) => {

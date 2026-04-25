@@ -18,23 +18,21 @@ Current status:
 - [x] Project-level memory (item 5) is complete.
 - [x] Explicit phase controller (item 6) is complete.
 - [x] Apply-back conflict resolution (item 7) is complete.
+- [x] Better approval/review actions (item 8) are complete.
 
 Where we left off:
 
-- The last completed work added **Apply-Back Conflict Resolution** in
-  `src/workspace/shadow-workspace.js`:
-  - Existing conflict detection still blocks automatic apply-back when real workspace
-    files changed while a shadow task was running.
-  - Conflict summaries now show real and shadow file metadata/previews.
-  - Each conflicted file can be resolved by keeping the real workspace version, applying
-    the shadow version, or saving the shadow version under `.agent/conflicts`.
-  - Clean changed files are applied while conflicted files follow their explicit choices.
-  - Resolution artifacts are written to `apply-back-resolution.json` and `apply-back.json`.
-  - Interactive accept flow now offers per-file conflict choices; noninteractive flow stays
-    blocked and prints clear next-step text.
-- Test suite is at 87 tests, all passing (5 new apply-back conflict tests in
-  `test/shadow-workspace.test.js`).
-- The next AI should continue with **Better Approval And Review Actions** (item 8 in the
+- The last completed work added **Better Approval And Review Actions**:
+  - Approval prompts now include `Choose another approach` and `Cancel task`.
+  - Approval denials preserve `alternative_requested` and `cancelled` intent in tool
+    results so model/tool callers can distinguish them from ordinary denial.
+  - Review menus now include `See technical details`, `Open changed file list`,
+    `Resolve apply-back conflict`, and `Cancel task`.
+  - Typed fallback commands now include `/details`, `/files`, `see technical details`,
+    `open changed file list`, `resolve conflicts`, and `cancel task`.
+  - Final review cards list the expanded next actions.
+- Test suite is at 88 tests, all passing.
+- The next AI should continue with **Model Adapter Improvements** (item 9 in the
   build order) unless the user redirects.
 
 Useful verification command:
@@ -63,6 +61,8 @@ The harness now has the core safe coding-agent loop:
   and model tool filtering by phase.
 - Apply-back conflict resolution with per-file keep/apply/save choices and conflict
   artifacts.
+- Better approval/review actions with richer menus, typed fallbacks, technical details,
+  changed-file list shortcuts, alternate-approach approval denial, and task cancellation.
 
 Phase 2 should focus on agent capability: helping the model find the right code, understand failures, iterate safely, and deliver working changes more often.
 
@@ -337,15 +337,13 @@ The harness can stop a task from jumping straight from user request to final ans
 
 ## 7. Better Approval And Review Actions
 
-Status: partially implemented.
+Status: complete.
 
 Already implemented:
 
 - [x] interactive approval menu
 - [x] interactive post-review action menu
 - [x] typed fallback commands
-
-Still pending:
 
 ### Goal
 
@@ -358,8 +356,8 @@ Approval choices:
 - [x] Allow once / allow for this task
 - [x] Deny
 - [x] Explain why needed
-- [ ] Choose another approach
-- [ ] Cancel task
+- [x] Choose another approach
+- [x] Cancel task
 
 Review actions:
 
@@ -367,9 +365,10 @@ Review actions:
 - [x] Adjust
 - [x] Undo
 - [x] See diff
-- [ ] See technical details
-- [ ] Open changed file list
+- [x] See technical details
+- [x] Open changed file list
 - [x] Resolve apply-back conflict
+- [x] Cancel task
 
 ### Definition Of Done
 
@@ -492,8 +491,8 @@ The final review should answer:
 5. ~~Project memory.~~ **Done.**
 6. ~~Explicit phase controller.~~ **Done.**
 7. ~~Apply-back conflict resolution.~~ **Done.**
-8. Better approval/review actions. ← **Next.**
-9. Model adapter improvements.
+8. ~~Better approval/review actions.~~ **Done.**
+9. Model adapter improvements. ← **Next.**
 10. Better diff and review UX.
 
 ---
@@ -524,5 +523,5 @@ The agent should:
 
 Remaining gaps before Phase 2 is fully done:
 
-- Better approval/review actions (item 7): `Choose another approach` and `Cancel task` not yet wired.
+- Model adapter improvements (item 9): streaming, structured output, retries, fallback models, usage/cost tracking, and provider capability flags are not implemented yet.
 - Better diff/review UX (item 10): diff is technical only; no blast radius or grouped file reasons.
