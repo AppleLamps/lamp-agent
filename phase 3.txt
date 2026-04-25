@@ -1,0 +1,642 @@
+# Phase 3 Plan: Hardening And Real-Repo Capability
+
+## Handoff Summary
+
+This file is the initial Phase 3 roadmap. Phase 2 finished with the harness able
+to safely run a full task lifecycle on small workspaces; Phase 3 turns that
+foundation into something we can point at real repositories with confidence.
+
+Current status:
+
+- [~] Real-repo fixtures and end-to-end CLI coverage (item 1) — almost
+  done. In place: e2e CLI driver (with an early-exit rejection if the
+  harness crashes mid-expect), fixture-copy helper, four fixtures
+  (non-git plain, Node passing, Node failing, pytest failing), pluggable
+  model adapter factory (`src/model/index.js`) plus a stub adapter and
+  script helper (`test/e2e/helpers/stub-adapter.js`, `stub-script.js`),
+  and 13 e2e tests covering banner+exit, full lifecycle, failing-verify
+  path, non-git workspace, destructive command block, malformed patch
+  reject, stub-driven file create with verify, dependency-change approval
+  (denied), secret-file approval (denied), external-publish (push)
+  approval (denied), model.respond throwing → graceful fallback, shadow
+  apply-back conflict (blocked when real workspace changes during the
+  task), and pytest runner recording a failed Python test (gated on
+  `python -m pytest --version`). The work surfaced and fixed two real
+  bugs: the permission engine's destructive regex used a trailing `\b`
+  that let `rm -rf /` slip through, and `model.respond` errors used to
+  crash the task by hanging the process via readline. Remaining
+  sub-bullets: Vitest / Express+typecheck / Next.js+build fixtures
+  (which require committing node_modules or shimming the toolchain) and
+  transient-retry / fallback-model coverage (which is OpenRouter-adapter
+  internal behavior; needs a fake-fetch test).
+- [ ] Stronger targeted checks and parsers (item 2) — not started.
+- [ ] Pre-patch blast radius and edit preview (item 3) — not started.
+- [ ] Streaming wired into the CLI (item 4) — not started.
+- [ ] Multi-provider model adapters (item 5) — not started.
+- [ ] Structured outputs beyond critique (item 6) — not started.
+- [ ] Resumable tasks and cancel-in-flight (item 7) — not started.
+- [ ] Dependency-aware edits and cross-file binding (item 8) — not started.
+- [ ] Real language-server integration, TypeScript first (item 9) — not started.
+- [ ] GitHub/CI integration (item 10) — not started.
+
+Where we are starting:
+
+- Phase 2 roadmap is complete. Latest verified baseline: `npm test` passes with
+  97 tests. Latest pushed commit at this handoff: `957efa5 Update handoff
+  documentation` on `main`.
+- The harness already has the seven task phases (intake → triage → plan → patch
+  → verify → critique → final_review), structured task artifacts, snapshot-based
+  undo, shadow workspace with apply-back conflict handling, regex code-intel,
+  targeted check runner, bounded repair loop, and a styled review card.
+- `.agent/` is intentionally ignored runtime state. All Phase 3 items must keep
+  the harness usable when `.agent/` is absent or partial.
+
+Useful verification command:
+
+```sh
+npm test
+```
+
+## Current Baseline
+
+Carried forward from Phase 2:
+
+- CLI chat shell with styled output, interactive menus, approval prompts, and
+  review actions (`accept`, `adjust`, `undo`, `see diff`, `see technical
+  details`, `open changed file list`, `resolve conflicts`, `cancel task`).
+- Task state under `.agent/tasks/<id>/` with task.json, beliefs.json,
+  changed-files.json, commands.jsonl, model-usage.jsonl, check-results.json,
+  checks/*, snapshots/*, conflicts/*, phases.json, verification.json,
+  apply-back.json, apply-back-conflicts.json, review.md, final-summary.md,
+  events.jsonl.
+- Project memory under `.agent/memory/project.json` with stale-source refresh
+  preserving `decisions` and `avoid_touching`.
+- Permission engine that classifies paths and commands into allow/ask/blocked
+  tiers, with explicit handling for dependency, network, secret,
+  outside-workspace, push/deploy, destructive, local-check, and read-only forms.
+- Tool runtime: list/read/search, edit primitives (`replace_range`,
+  `replace_exact`, `insert_before/after`, `create_file`, `delete_file`,
+  `rename_file`), `apply_patch`, `run_command`, broad and targeted check
+  runners, code intelligence (`find_symbols`, `find_definition`,
+  `find_references`, `find_imports`, `find_exports`, `route_map`).
+- Shadow workspace via git worktree or filtered temp copy, with apply-back,
+  hash-based conflict detection, and per-file keep/apply/save resolution.
+- Bounded verify-and-repair loop (3 attempts) that prefers targeted runs when
+  failed files are known.
+- Critique pass with structured findings (model JSON when available, local
+  fallback otherwise).
+- Final review card with changed-file reasons, blast radius, check snippets,
+  severity-grouped warnings, and task timeline.
+- Model adapter contract (`respond`, `repair`, `critique`, `streamText`,
+  `capabilities`) with OpenRouter implementation, fallback models, transient
+  retry, usage/cost tracking, and a structured-JSON critique mode.
+
+Phase 3 focuses on three things on top of that foundation:
+
+- **Confidence on real repos** via fixtures and end-to-end coverage so we can
+  measure regressions when we change anything else.
+- **Better signal** from checks, blast radius, and cross-file binding so the
+  agent works on the right files and sees what an edit will break before it
+  patches.
+- **Productization** of streaming, multi-provider adapters, resumable tasks,
+  cancel-in-flight, and GitHub/CI so the harness behaves like a tool a person
+  would actually leave running on a real codebase.
+
+## What Is Left
+
+All ten items below. The next session should treat item 1 (real-repo fixtures
+and end-to-end CLI coverage) as a prerequisite for the rest — most of the other
+items want fixture repos to exercise behavior, and the parsers and blast-radius
+work in particular need golden inputs to lock down.
+
+---
+
+## 1. Real-Repo Fixtures And End-To-End CLI Coverage
+
+Status: in progress. Foundation landed; failure-mode coverage and the
+remaining fixture variants are still open.
+
+### Goal
+
+Move from unit tests over isolated functions to a fixture-driven suite that
+exercises the full CLI lifecycle against representative real-world repositories.
+
+### Add
+
+- [~] `test/fixtures/` repos covering at least:
+  - [ ] a small Node project with Vitest and a deliberately failing test
+  - [x] a small Node project using `node:test` with a passing suite
+        (`node-builtin-test-passing`)
+  - [x] a small Node project using `node:test` with a deliberately failing
+        suite (`node-builtin-test-failing`)
+  - [ ] a small Express-like API with a typecheck failure
+  - [ ] a small Next.js app with a build-time error
+  - [x] a small Python project with a pytest failure (`pytest-failing`,
+        with `pyproject.toml` configuring pytest to recognise
+        `check_*.py` so Node's parent test runner does not auto-discover
+        Python files; e2e test gated on `python -m pytest --version`)
+  - [x] a non-git plain directory (`non-git-plain`, exercises snapshot diff
+        and the no-package-manager fallback)
+- [x] `test/e2e/cli.test.js` driver that spawns `node ./src/index.js` with a
+  scripted stdin and asserts on stdout and on artifacts written under
+  `.agent/tasks/`. Driver lives in `test/e2e/helpers/cli-driver.js`; fixtures
+  are copied to a tmpdir per test by `test/e2e/helpers/copy-fixture.js`.
+- [~] Golden assertions for: project triage summary, plan recorded before
+  patch, verify-and-repair loop running, critique produced, review card text,
+  shadow apply-back behavior, and conflict resolution path. Currently
+  asserting: phase completion, task plan recorded, project memory written,
+  check-results recorded, verification status (passed and failed paths),
+  events emitted, final-summary card text, and checkpoint contents on
+  non-git workspaces. Shadow apply-back + conflict resolution e2e still TBD.
+- [~] Failure-mode coverage:
+  - [x] destructive-command block (`rm -rf /`, asserts permission engine
+        records `decision.action: "blocked"` and the command never runs)
+  - [x] apply-patch reject (malformed unified diff returns error, no
+        changed files tracked, fixture sources untouched)
+  - [x] secret-file access prompt (`.env` read triggers approval; denied
+        in non-interactive driver, file unread)
+  - [x] dependency-change prompt (`npm install lodash` triggers approval;
+        denied; commands.jsonl records `decision.tier: "dependency_change"`)
+  - [x] external-publish prompt (`git push` triggers approval; denied;
+        commands.jsonl records `decision.tier: "external_publish"`)
+  - [x] provider error: stub `respond` throws a simulated 503; the
+        harness logs a `model_error` event, surfaces a warning to the
+        user, and continues into verify with a fallback assistant
+        response so the task still reaches `final_review`.
+  - [ ] transient retry / fallback model — OpenRouter-adapter internal
+        behavior; needs a fake-fetch test rather than the e2e harness.
+  - [x] shadow apply-back conflict (real workspace edited during a
+        shadow-mode task; `accept` review action blocked;
+        `apply-back-conflicts.json` written with the affected files;
+        the user's out-of-band edit is preserved on disk).
+- [x] Test helpers for stubbing the model adapter so e2e flows do not need
+  network. `src/model/index.js` exposes `createModelAdapter(modelConfig)`
+  which honors the `LAMP_MODEL_ADAPTER` env var (path to an ESM module
+  exporting `createAdapter`); tests use this to inject
+  `test/e2e/helpers/stub-adapter.js`, which reads a JSON script from
+  `LAMP_STUB_SCRIPT` and runs the listed tools against the harness's
+  `tools` object. `test/e2e/helpers/stub-script.js` exposes the absolute
+  adapter path and a `writeStubScript()` helper.
+- [x] CLI-driver `respondToApproval(answer)` for the typed-fallback
+  approval prompt the harness writes when stdin is non-TTY and an
+  approval boundary is hit. Used by the dependency-change, secret-file,
+  and external-publish failure-mode tests.
+- [x] `npm run test:e2e` script and a CI-friendly default that skips e2e if a
+  fast loop is requested. `npm test` and `npm run test:e2e` both go through
+  `scripts/run-tests.mjs`, which enumerates `*.test.{js,mjs,cjs}` files
+  explicitly and skips `helpers/`/`fixtures/` to avoid auto-discovery
+  pollution under Node 24.
+
+### Bugs caught by this work
+
+- The permission engine's destructive command regex used a trailing `\b`
+  that failed to match at end-of-string, letting `rm -rf /` and
+  `chmod -R 777 /` slip through into the "ask" tier. Fixed in
+  `src/permissions/permission-engine.js` by splitting the regex into
+  word-bounded alternatives (`sudo`, `format`, `del /s`, `Remove-Item`)
+  and unbounded alternatives (`rm -rf /|~`, `chmod -R 777 /`). New unit
+  tests in `test/permission-engine.test.js` lock the fix in.
+- `src/index.js` did not catch errors from `model.respond`, so an
+  adapter throwing (provider 5xx, network blip, stub exception) tore
+  down the task: main rejected, the readline interface kept the process
+  alive, and no further output appeared. Fixed by wrapping
+  `model.respond` in a try/catch that logs a `model_error` event,
+  prints a warning, and synthesises a fallback `assistant_response` so
+  the lifecycle continues into verify, critique, and final_review.
+
+### Notes for the next agent
+
+- The CLI driver strips `NODE_TEST_*` env vars before spawning the harness.
+  Without this, any `node --test` invocation the harness runs (for example,
+  `npm test` inside a fixture) would attach to the parent test runner via
+  the v8 child-test protocol and report exit code 0 on real failures.
+- Fixture tests must not be named `*.test.{js,mjs,cjs}` and must not live
+  inside directories named `test`/`tests`/`__tests__`, otherwise Node's
+  auto-discovery picks them up as part of the parent suite. The current
+  fixtures use `specs/main.mjs` invoked through an explicit file path in
+  the fixture's `package.json` test script.
+- The phase controller's `validatePatchReadiness` rejects a `patch` phase
+  start unless either `task_type` matches `docs|setup|explain` or the
+  triage step recorded at least one notable file. When writing e2e tests
+  for non-trivial task types, prefer fixtures whose triage finds notable
+  files (`package.json`, `src/`, `test/`, `README.md`, configs); the
+  `node-builtin-test-passing` fixture is a safe default. If the harness
+  exits mid-task because of a phase-gate throw, the readline interface
+  keeps the process alive without producing further output, which the
+  driver now handles via an `exit` listener inside `expect()`.
+- The pluggable model adapter (`createModelAdapter` in `src/model/index.js`)
+  is the seam that Phase 3 item 5 (multi-provider adapters) will plug new
+  provider modules into. Each new provider should export `createAdapter`
+  the same way the stub does.
+
+### Definition Of Done
+
+A new contributor can run `npm test` and `npm run test:e2e`, see the harness
+drive each fixture repo through the whole task lifecycle, and trust that a
+regression in any component is caught before it lands.
+
+---
+
+## 2. Stronger Targeted Checks And Parsers
+
+Status: not started.
+
+### Goal
+
+Turn check output into reliably structured failure data for every framework we
+claim to support, and map failed tests back to the source files they exercise
+so the repair loop can edit the right thing.
+
+### Add
+
+- [ ] Reporter-aware runners: when the runner supports it, prefer JSON output
+  (`vitest --reporter=json`, `jest --json`, `pytest --junit-xml`,
+  `tsc --pretty false`, `eslint --format=json`) and parse the structured form
+  before falling back to regex over stdout.
+- [ ] Build-error depth: parsers for Vite/Rollup, esbuild, webpack, Next.js,
+  TypeScript build mode, Cargo, and Go build output. Each should produce the
+  same `{ file, line, column, code, message }` shape used today.
+- [ ] Framework-specific failure shapes recorded in `check-results.json`:
+  expected/actual snapshot diffs, mismatched type vs value errors, missing
+  module resolution, syntax-error file/line, lint rule and fix availability.
+- [ ] Failed-test → source mapping: walk imports from the failing test file to
+  rank candidate source files, and surface the ranked list under
+  `likely_relevant_files` with provenance (`stack`, `import-graph`,
+  `co-located`).
+- [ ] Golden-output tests under `test/fixtures/check-output/` for each parser
+  so future regressions show up as diffs.
+- [ ] Repair loop changes that prefer the new structured failure shape and
+  pass it into `model.repair` instead of free-form `parsed` blobs.
+
+### Definition Of Done
+
+For a failing Vitest, Jest, pytest, eslint, or tsc run, the harness records a
+structured failure with file/line/column data and a ranked list of likely
+relevant source files, and the repair loop edits one of those files first.
+
+---
+
+## 3. Pre-Patch Blast Radius And Edit Preview
+
+Status: not started.
+
+### Goal
+
+Compute scope, risk, and verification expectations *before* the model patches,
+not just at review time, so the model and the user can see what an edit will
+touch.
+
+### Add
+
+- [ ] Move blast-radius computation in `src/review/review-summary.js` into a
+  pre-patch path that runs after triage and before patch.
+- [ ] New phase-level artifact: `pre-patch-plan.json` containing inferred
+  affected files (from triage + code-index references), risk labels, predicted
+  verification (which targeted checks should run), and a list of files the
+  model is expected to touch.
+- [ ] Edit-preview tool: dry-run variants of `apply_patch` and the edit
+  primitives that return the resulting diff without writing. Surface as a
+  `preview_patch` tool in the model adapter.
+- [ ] Pre-patch warning surface: when the planned edit set crosses
+  `avoid_touching` from project memory, a secret path, a dependency manifest,
+  or a checked-in lockfile, surface the warning and prompt for approval before
+  the patch phase begins.
+- [ ] CLI: a `/plan` shortcut that prints the current `pre-patch-plan.json`
+  and a "preview" review action that shows the next staged patch before
+  apply.
+- [ ] Phase controller gate: `patch` cannot begin until the pre-patch plan is
+  recorded (analogous to the existing `risky_boundaries` and `current_plan`
+  requirements).
+
+### Definition Of Done
+
+For any non-trivial task, the harness can answer "what files do you expect to
+change, what could break, and which checks will you run?" before any byte is
+written, and the user can preview a staged patch before it lands.
+
+---
+
+## 4. Streaming Wired Into The CLI
+
+Status: not started. Adapter already exposes `streamText`.
+
+### Goal
+
+Render the model's response progressively in the CLI, including during
+tool-calling loops, instead of waiting for the full message before showing
+anything.
+
+### Add
+
+- [ ] `src/index.js` integration: when `capabilities.streaming` is true,
+  switch the `respond` path to a streaming variant that emits partial text
+  through `ui.assistant`/`ui.progress`.
+- [ ] Streaming tool-call loop in `src/model/openrouter.js`: handle
+  incremental `tool_calls` deltas from OpenRouter, dispatch tools as soon as
+  arguments are complete, and stream both prose and tool announcements.
+- [ ] CLI rendering: a streaming-aware variant of `ui.assistant` that does not
+  re-box on every token, plus a "thinking" status while tools run.
+- [ ] Backpressure and cancellation: streaming respects an `AbortController`
+  passed from the CLI so a `cancel task` action mid-stream stops the request
+  cleanly.
+- [ ] Usage and cost recorded against the streamed call (today only the
+  non-streaming `respond` path records usage).
+- [ ] Tests with a fake stream emitter exercising token order, tool-call
+  deltas, mid-stream cancellation, and graceful fallback when the provider
+  does not support streaming.
+
+### Definition Of Done
+
+When streaming is enabled, the user sees the model's narration appear token by
+token, sees tool calls announced as they happen, and can cancel mid-stream
+without leaving a half-completed task.
+
+---
+
+## 5. Multi-Provider Model Adapters
+
+Status: not started. Adapter contract exists in
+`src/model/adapter-contract.js`.
+
+### Goal
+
+Make provider choice a configuration concern rather than a code change, so the
+harness can run against Anthropic, OpenAI, OpenRouter, and a local model
+without rewriting task logic.
+
+### Add
+
+- [ ] `src/model/anthropic.js` adapter using `@anthropic-ai/sdk`, with tool
+  calling, streaming, structured JSON, and prompt caching.
+- [ ] `src/model/openai.js` adapter for the OpenAI Chat Completions and
+  Responses API.
+- [ ] `src/model/local.js` adapter for an OpenAI-compatible local endpoint
+  (Ollama, LM Studio, llama.cpp) — useful for offline development.
+- [ ] Provider selection in `.agent/config.json` (`model.provider: "anthropic"
+  | "openai" | "openrouter" | "local"`) with a single `createModelAdapter`
+  factory in `src/model/index.js` that picks the right adapter.
+- [ ] Capability negotiation: each adapter declares real `capabilities` and
+  the harness no longer assumes streaming/tool-calling/JSON mode.
+- [ ] Per-provider env var documentation in README and config defaults.
+- [ ] Adapter contract tests (one per provider) that verify the
+  `MODEL_ADAPTER_METHODS` surface and capability shape.
+- [ ] A live-network smoke test (skipped unless an env var is set) that runs
+  one minimal request per provider against a small fixture.
+
+### Definition Of Done
+
+Switching provider in `.agent/config.json` is enough to retarget the harness;
+all artifact paths, phase behavior, and review output are unchanged.
+
+---
+
+## 6. Structured Outputs Beyond Critique
+
+Status: not started. Critique already uses JSON mode when the model supports
+it.
+
+### Goal
+
+Use structured outputs for more than critique so plans, edit specs, and repair
+findings come back as data we can validate, not free-form text we have to
+parse.
+
+### Add
+
+- [ ] JSON-mode `plan` output: a structured plan schema (steps, risky
+  boundaries, expected files, expected checks) that replaces today's free-form
+  `current_plan` array when the model supports it.
+- [ ] JSON-mode `edit_spec` output: a list of edits the model intends to make
+  (`{ tool, path, args, intent }`), persisted as `edit-spec.json` and used
+  both for pre-patch blast radius (item 3) and for retry without re-thinking.
+- [ ] JSON-mode `repair_findings` output: structured form of what each repair
+  attempt diagnosed, with severity and proposed next action.
+- [ ] Schema validation on every structured response, with clear fallback to
+  text mode when validation fails.
+- [ ] Capability-gated: providers that do not advertise JSON mode keep using
+  the existing free-form path.
+- [ ] Test fixtures pinning each schema with an example response.
+
+### Definition Of Done
+
+Plan, edit spec, and repair output are validated structures persisted under
+`.agent/tasks/<id>/`, viewable via `/details`, and used by other phases
+without ad-hoc string parsing.
+
+---
+
+## 7. Resumable Tasks And Cancel-In-Flight
+
+Status: not started. Phase controller persists state but cannot resume mid-flow.
+
+### Goal
+
+Treat tasks as durable objects that can be paused, resumed, or cancelled
+mid-flight without leaving the harness in an inconsistent state.
+
+### Add
+
+- [ ] Resume: a `/resume <task-id>` command that loads `phases.json`, decides
+  the next phase, and continues. The phase controller already enforces
+  ordering; this work is mostly the CLI glue and the rule for "what counts as
+  resumable" (e.g. patch + verify can resume, critique cannot rerun without
+  user direction).
+- [ ] Cancel-in-flight: a real `cancel task` that aborts the active model
+  request via `AbortController`, marks the in-progress phase as `cancelled`,
+  and writes a cancellation event. Today `cancel task` only flips status; the
+  current model call keeps running.
+- [ ] Alternate-approach flow: when an approval is denied with "another
+  approach", surface the denial back to the model in a structured way and
+  re-enter the patch phase with the new constraint recorded in beliefs.
+- [ ] Graceful exit: pressing Ctrl-C during a task captures partial state,
+  marks the active phase `interrupted`, and offers `/resume` on next start.
+- [ ] `/tasks` command listing recent tasks with status, last phase, and
+  whether they can be resumed.
+- [ ] Tests covering: resume after Ctrl-C in patch, cancel during streamed
+  respond, alternate-approach re-entry, and re-resume of an already-completed
+  task being a no-op.
+
+### Definition Of Done
+
+A user can start a long task, hit Ctrl-C, restart the CLI, run `/resume`, and
+the harness picks up where it left off without redoing the work it already
+finished.
+
+---
+
+## 8. Dependency-Aware Edits And Cross-File Binding
+
+Status: not started. Code intelligence is regex-based and per-file.
+
+### Goal
+
+When the model edits a symbol, surface the call sites it just affected so the
+harness can warn the user, run the right targeted checks, and avoid rename
+breakage.
+
+### Add
+
+- [ ] Cross-file binding: extend `src/code/code-index.js` so imports resolve
+  to defining files, not just source-string matches. For ESM/CommonJS, walk
+  `imports`/`require` arguments through the workspace path resolution rules.
+  For Python, resolve `from x import y` against the package layout.
+- [ ] New tools:
+  - `symbol_callers(name)` — every reference grouped by file with source
+    snippets.
+  - `symbol_dependencies(file)` — the transitive imports of a file with one
+    level of resolved targets.
+  - `dependency_graph(path?)` — the long-deferred aggregator for the import
+    graph (Phase 2 left this implicit).
+  - `component_map()` — React component discovery (the only Phase 2 code-intel
+    tool not built).
+- [ ] Pre-patch impact analysis: when the model is about to rename or change
+  the signature of an exported symbol, the pre-patch plan from item 3
+  enumerates affected files and prompts before the change lands.
+- [ ] Repair-loop hint: pass the resolved import graph of the failing test
+  into `model.repair` so the model edits the right source file on the first
+  attempt.
+- [ ] Tests on real fixtures with imports across folders, default vs named
+  imports, re-exports, and dynamic imports.
+
+### Definition Of Done
+
+The harness can answer "if I rename `updateUser`, what files are affected?"
+with file-level evidence, and it surfaces that answer to both the model and
+the user before patching.
+
+---
+
+## 9. Real Language-Server Integration (Optional, TypeScript First)
+
+Status: not started.
+
+### Goal
+
+For TypeScript and JavaScript projects with `tsconfig.json`, replace the
+regex code intel with real type-aware navigation when a language server is
+available.
+
+### Add
+
+- [ ] Optional dependency on `typescript` and a small wrapper that drives
+  `tsserver` (or `typescript-language-server`) over stdio.
+- [ ] LSP-backed implementations of `find_definition`, `find_references`,
+  `find_symbols`, and `find_imports` that fall back to the regex index when
+  the LSP is unavailable or rejects a request.
+- [ ] New LSP-only tools: `hover_info`, `signature_help`, and
+  `diagnostics(path)` for live type errors without running `tsc`.
+- [ ] Workspace lifecycle: spin the LSP up at the start of a task, share it
+  across tools in the same task, shut it down when the task ends. Honor the
+  shadow workspace path so the LSP types match the workspace the model is
+  editing.
+- [ ] Feature flag: `code_intel.lsp = "off" | "auto" | "on"` in
+  `.agent/config.json`, default `"auto"` (try LSP, fall back to regex).
+- [ ] Capability tests verifying `hover_info` matches what the index returned
+  for the same symbol, and that the LSP path agrees with the regex path on
+  every fixture.
+- [ ] Future hooks: clearly-isolated module so a Python LSP (`pyright`,
+  `pylsp`) can be added next without restructuring.
+
+### Definition Of Done
+
+On a TypeScript fixture, the harness answers "where is `updateUser` defined,
+who calls it, what type does it return?" using `tsserver` evidence — and on a
+non-TypeScript fixture, falls back to the existing regex index transparently.
+
+---
+
+## 10. GitHub/CI Integration
+
+Status: not started.
+
+### Goal
+
+Bring the agent up to where it can branch, push, open PRs, watch CI, and
+repair from CI logs — under the same approval boundaries that protect every
+other risky action.
+
+### Add
+
+- [ ] `gh` CLI detection and a thin wrapper module
+  (`src/integrations/github.js`).
+- [ ] New tools (each gated by the existing approval engine):
+  - `branch_create(name)` — creates a branch from the current HEAD with a
+    checkpoint event.
+  - `pr_create({ title, body })` — opens a PR via `gh pr create`, records
+    `pr.json` on the task.
+  - `pr_status(number?)` — fetches checks for the active PR.
+  - `ci_log(run_id, job?)` — streams the failed-job log so the repair loop
+    can see what broke.
+- [ ] CI repair flow: when a `pr_status` shows failures, parse the CI log
+  through the same parsers from item 2 and feed structured failures into
+  `model.repair` like a local check failure.
+- [ ] Branch and push are classified as `external_publish` (already exists in
+  the permission engine) so they always prompt; force-push is blocked.
+- [ ] Review action: a "open PR" choice on the final review card that runs
+  the branch + push + `pr_create` flow with a single approval prompt.
+- [ ] Tests using a mocked `gh` shim under `test/fixtures/github/` so the
+  flow can be exercised without contacting GitHub.
+
+### Definition Of Done
+
+After accepting a task, a user can answer the prompt "open a PR for this?"
+and the harness creates a branch, pushes it, opens a PR, and watches the
+checks. If CI fails, the same repair loop that handles local failures takes
+the CI log as its input.
+
+---
+
+## Recommended Build Order
+
+1. Real-repo fixtures and end-to-end CLI coverage. Everything else is easier
+   to verify once this exists.
+2. Stronger targeted checks and parsers. Uses fixtures from item 1; produces
+   structured failures other items depend on.
+3. Pre-patch blast radius and edit preview. Uses fixtures and parsers; lays
+   the groundwork for safer multi-file edits.
+4. Streaming wired into the CLI. Self-contained productization win that does
+   not depend on items 5–10.
+5. Multi-provider model adapters. Capability flags and adapter contract are
+   already in place; this is mostly new code behind the existing factory.
+6. Structured outputs beyond critique. Builds on items 3 and 5 to produce the
+   plan, edit-spec, and repair-finding schemas.
+7. Resumable tasks and cancel-in-flight. Easier once streaming and structured
+   outputs exist; touches `src/index.js` and the phase controller.
+8. Dependency-aware edits and cross-file binding. Strengthens code-index.js
+   without requiring an external LSP.
+9. Real language-server integration. Optional and heavier; depends on
+   stable cross-file binding and pre-patch plan to compare against.
+10. GitHub/CI integration. Sits on top of the parsers (CI log → repair) and
+    benefits from streaming, structured outputs, and resumable tasks.
+
+---
+
+## Phase 3 Definition Of Done
+
+Phase 3 is done when the user can open a real existing repository and say:
+
+```txt
+Fix the failing build and open a PR
+```
+
+The agent should:
+
+- [ ] resume the task safely if the user restarts the CLI mid-flight
+- [ ] stream its narration as it works
+- [ ] use a real test/build/lint reporter to extract structured failures
+- [ ] use cross-file binding (or an LSP when available) to pick the right
+      source files
+- [ ] produce a pre-patch blast radius the user can preview
+- [ ] use structured outputs for the plan and edit spec
+- [ ] support whichever provider the user configured (OpenRouter, Anthropic,
+      OpenAI, or a local model)
+- [ ] run targeted checks, parse failures, and repair within the bounded loop
+- [ ] open a PR through the approval engine when the user accepts
+- [ ] watch CI and repair from CI logs through the same loop
+- [ ] keep all the Phase 2 safety guarantees: shadow workspace, apply-back
+      conflict resolution, snapshot undo, permission boundaries, audit logs,
+      and reviewable artifacts
+
+Remaining gaps before Phase 3 is fully done:
+
+- All ten items above.

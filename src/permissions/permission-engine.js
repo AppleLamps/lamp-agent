@@ -4,7 +4,20 @@ const SECRET_FILE_RE = /(^|[/\\])(\.env(\..*)?|id_rsa|id_ed25519|\.npmrc|\.pypir
 const DEPENDENCY_RE = /\b(npm\s+(install|i)|pnpm\s+add|yarn\s+add|bun\s+add|pip\s+install|bundle\s+install|cargo\s+add)\b/i;
 const NETWORK_RE = /\b(curl|wget|Invoke-WebRequest|iwr|fetch)\b|\bhttps?:\/\//i;
 const PUSH_DEPLOY_RE = /\b(git\s+push|npm\s+publish|vercel\s+deploy|railway\s+deploy|netlify\s+deploy|supabase\s+db\s+push)\b/i;
-const DESTRUCTIVE_RE = /\b(sudo|rm\s+-rf\s+(\/|~)|Remove-Item\b.*\s-Recurse|del\s+\/s|format\b|chmod\s+-R\s+777\s+\/)\b/i;
+// Destructive command patterns. We split alternatives ending in word
+// characters (which can carry a trailing `\b` to avoid false positives like
+// `format` matching `formatter`) from alternatives ending in non-word
+// characters (`/` or `~`), where a trailing `\b` would fail to match at
+// end-of-string and let `rm -rf /` slip through.
+const DESTRUCTIVE_RE = new RegExp(
+  [
+    String.raw`\b(?:sudo|del\s+\/s|format)\b`,
+    String.raw`\bRemove-Item\b.*\s-Recurse\b`,
+    String.raw`\brm\s+-rf\s+(?:\/|~)`,
+    String.raw`\bchmod\s+-R\s+777\s+\/`
+  ].join("|"),
+  "i"
+);
 const LOCAL_CHECK_RE = new RegExp(
   [
     String.raw`\b(npm|pnpm|yarn|bun)\s+(run\s+)?(test|lint|typecheck|build)\b`,

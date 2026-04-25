@@ -1,0 +1,10 @@
+{
+  "name": "fixture-node-builtin-test-passing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lamp-agent E2E fixture: Node project with a passing node:test suite.",
+  "scripts": {
+    "test": "node --test specs/main.mjs"
+  }
+}

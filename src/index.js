@@ -9,7 +9,7 @@ import { appendEvent } from "./log/event-log.js";
 import { createToolRuntime } from "./tools/runtime.js";
 import { summarizeProject, finalReview } from "./review/review.js";
 import { critiqueTask } from "./review/critique.js";
-import { createOpenRouterAdapter } from "./model/openrouter.js";
+import { createModelAdapter } from "./model/index.js";
 import { updateBeliefsFromCritique, updateBeliefsFromResponse, updateBeliefsFromTriage } from "./task/beliefs.js";
 import {
   applyShadowWorkspaceChanges,
@@ -36,7 +36,7 @@ async function main() {
   const prompts = createInteractivePrompts({ input, output });
   const requestApproval = createApprovalPrompt(rl, approvals, ui, prompts);
   const tools = createToolRuntime({ cwd, config, requestApproval });
-  const model = createOpenRouterAdapter(config.model);
+  const model = await createModelAdapter(config.model);
 
   output.write(`${ui.banner(VERSION)}\n`);
 
@@ -159,16 +159,34 @@ async function main() {
       current_plan: currentPlan,
       risky_boundaries: riskyBoundaries
     });
-    const response = await model.respond({
-      userRequest: line,
-      projectSummary,
-      tools: activeTools,
-      activeTask,
-      allowedTools: TASK_PHASES.patch.allowedTools,
-      onProgress(message) {
-        output.write(`${ui.progress(message)}\n`);
-      }
-    });
+    let response;
+    try {
+      response = await model.respond({
+        userRequest: line,
+        projectSummary,
+        tools: activeTools,
+        activeTask,
+        allowedTools: TASK_PHASES.patch.allowedTools,
+        onProgress(message) {
+          output.write(`${ui.progress(message)}\n`);
+        }
+      });
+    } catch (error) {
+      const errorMessage = error?.message || String(error);
+      output.write(`${ui.warning(`Model error: ${errorMessage}. Continuing with a fallback response so the task can finish cleanly.`)}\n`);
+      await appendEvent(activeTask.dir, {
+        type: "model_error",
+        phase: "patch",
+        message: errorMessage
+      });
+      response = {
+        message: `The model adapter failed during the patch phase: ${errorMessage}. The harness recorded the error and continued without applying any model-driven changes.`,
+        taskPatch: {
+          assumptions: [`Model adapter raised an error: ${errorMessage}`]
+        },
+        error: { phase: "patch", message: errorMessage }
+      };
+    }
 
     await updateTaskStatus(activeTask, "patching", {
       ...response.taskPatch,
