@@ -23,7 +23,7 @@ export async function critiqueTask({ activeTask, tools, response, model, project
     ? await model.critique(context)
     : null;
   const critique = modelCritique?.ok
-    ? normalizeModelCritique(modelCritique.message)
+    ? normalizeModelCritique(modelCritique.structured || modelCritique.message)
     : localCritique(context, modelCritique?.message);
 
   const markdown = formatCritiqueMarkdown(critique);
@@ -112,6 +112,15 @@ function localCritique(context, modelNote) {
 }
 
 function normalizeModelCritique(message) {
+  if (message && typeof message === "object") {
+    return {
+      source: "model",
+      status: message.status || "reviewed",
+      findings: Array.isArray(message.findings) ? message.findings : [],
+      questions: Array.isArray(message.questions) ? message.questions : [],
+      summary: message.summary || "Model critique completed."
+    };
+  }
   return {
     source: "model",
     status: "reviewed",

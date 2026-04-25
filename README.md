@@ -64,11 +64,13 @@ Most recent completed work:
   - transient provider retries for `429`, `5xx`, and network/timeout-like failures
   - fallback model configuration through `model.fallbackModels`
   - per-task `model-usage.jsonl` plus `model_call` events for usage/cost tracking
+  - structured critique output through JSON mode when enabled
+  - streaming text through the adapter's `streamText` hook
   - `/details` reports recorded model call count and cost
 
 Next recommended work:
 
-1. Continue model adapter improvements: structured output and streaming
+1. Better diff and review UX
 
 Useful commands for the next session:
 
@@ -110,7 +112,7 @@ Implemented:
 - better approval/review actions with richer menus, typed fallbacks, technical details, changed-file lists, and task cancellation
 - styled CLI shell with boxed assistant responses, review cards, `/diff`, review actions, and interactive menus
 - OpenRouter tool-calling loop with network disabled by default
-- model adapter contract, capability flags, transient retry, fallback models, and usage/cost artifacts
+- model adapter contract, capability flags, transient retry, fallback models, structured critique output, streaming text, and usage/cost artifacts
 - approval prompts for risky path and command boundaries
 - local fallback response when model network calls are disabled
 
@@ -118,7 +120,6 @@ Known gaps:
 
 - targeted check runner is still basic
 - code intelligence is regex-based; no language-server depth (e.g. cross-file binding resolution)
-- model adapter improvements still need structured output support and streaming responses
 - diff/review UX is still basic for nontechnical summaries and blast-radius detail
 
 ## Shadow Workspace

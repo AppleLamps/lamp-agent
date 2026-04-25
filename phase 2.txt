@@ -19,10 +19,11 @@ Current status:
 - [x] Explicit phase controller (item 6) is complete.
 - [x] Apply-back conflict resolution (item 7) is complete.
 - [x] Better approval/review actions (item 8) are complete.
+- [x] Model adapter improvements (item 9) are complete.
 
 Where we left off:
 
-- The last completed work started **Model Adapter Improvements**:
+- The last completed work completed **Model Adapter Improvements**:
   - Added a formal adapter contract in `src/model/adapter-contract.js`.
   - OpenRouter adapter now exposes provider capability flags for tool calling, JSON mode,
     streaming, fallback models, usage support, and max context.
@@ -30,10 +31,12 @@ Where we left off:
   - Fallback model configuration is supported through `model.fallbackModels`.
   - Model usage/cost metadata is written to each task's `model-usage.jsonl` and `model_call`
     events.
+  - Structured critique output is supported through JSON mode when enabled.
+  - Streaming text is available through the adapter's `streamText` hook.
   - `/details` includes recorded model call count and cost.
-- Test suite is at 91 tests, all passing (3 new in `test/model-adapter.test.js`).
-- The next AI should continue the remaining **Model Adapter Improvements** work,
-  especially structured output and streaming, unless the user redirects.
+- Test suite is at 93 tests, all passing (5 total in `test/model-adapter.test.js`).
+- The next AI should continue with **Better Diff And Review UX** (item 10) unless the
+  user redirects.
 
 Useful verification command:
 
@@ -64,7 +67,8 @@ The harness now has the core safe coding-agent loop:
 - Better approval/review actions with richer menus, typed fallbacks, technical details,
   changed-file list shortcuts, alternate-approach approval denial, and task cancellation.
 - Model adapter contract, provider capability flags, transient retry, fallback model
-  configuration, and per-task usage/cost tracking.
+  configuration, structured critique output, streaming text hook, and per-task usage/cost
+  tracking.
 
 Phase 2 should focus on agent capability: helping the model find the right code, understand failures, iterate safely, and deliver working changes more often.
 
@@ -408,7 +412,7 @@ If the user edits a file while the agent works in shadow, the harness blocks aut
 
 ## 9. Model Adapter Improvements
 
-Status: partially implemented.
+Status: complete.
 
 Already implemented:
 
@@ -426,16 +430,14 @@ Already implemented:
   - streaming
   - max context
 
-Still pending:
-
 ### Goal
 
 Make model usage more robust and provider-agnostic.
 
 ### Add
 
-- [ ] structured output support where available
-- [ ] streaming responses
+- [x] structured output support where available
+- [x] streaming responses
 
 ### Definition Of Done
 
@@ -494,8 +496,8 @@ The final review should answer:
 6. ~~Explicit phase controller.~~ **Done.**
 7. ~~Apply-back conflict resolution.~~ **Done.**
 8. ~~Better approval/review actions.~~ **Done.**
-9. Model adapter improvements. ← **Next.**
-10. Better diff and review UX.
+9. ~~Model adapter improvements.~~ **Done.**
+10. Better diff and review UX. ← **Next.**
 
 ---
 
@@ -525,5 +527,4 @@ The agent should:
 
 Remaining gaps before Phase 2 is fully done:
 
-- Model adapter improvements (item 9): streaming, structured output, retries, fallback models, usage/cost tracking, and provider capability flags are not implemented yet.
 - Better diff/review UX (item 10): diff is technical only; no blast radius or grouped file reasons.

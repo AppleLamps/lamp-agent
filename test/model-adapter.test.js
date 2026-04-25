@@ -110,3 +110,121 @@ test("assertModelAdapter reports missing methods", () => {
     /missing required method/
   );
 });
+
+test("OpenRouter critique uses JSON mode when available and returns structured output", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-model-json-"));
+  const activeTask = { id: "task-json", dir: path.join(cwd, ".agent", "tasks", "task-json") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let requestedBody;
+
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      requestedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{
+            message: {
+              content: JSON.stringify({
+                status: "needs_attention",
+                summary: "Structured critique found one issue.",
+                findings: [{ severity: "warning", text: "Review the changed file." }],
+                questions: ["Was this verified?"]
+              })
+            }
+          }],
+          usage: { total_tokens: 20 }
+        })
+      };
+    };
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "json/model",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      retryBaseDelayMs: 0,
+      capabilities: { toolCalling: true, jsonMode: true }
+    });
+
+    const result = await adapter.critique({
+      activeTask,
+      task: { user_request: "Change file" },
+      changed_files: ["src/a.js"]
+    });
+
+    assert.equal(requestedBody.response_format.type, "json_object");
+    assert.equal(result.ok, true);
+    assert.equal(result.structured.status, "needs_attention");
+    assert.equal(result.structured.findings[0].severity, "warning");
+    assert.equal(result.structured.questions[0], "Was this verified?");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter streamText emits tokens from SSE chunks", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-model-stream-"));
+  const activeTask = { id: "task-stream", dir: path.join(cwd, ".agent", "tasks", "task-stream") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  const tokens = [];
+
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      assert.equal(body.stream, true);
+      const encoder = new TextEncoder();
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'));
+            controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'));
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+          }
+        })
+      };
+    };
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "stream/model",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      retryBaseDelayMs: 0,
+      capabilities: { streaming: true }
+    });
+
+    const result = await adapter.streamText({
+      activeTask,
+      messages: [{ role: "user", content: "Say hello" }],
+      onToken(token) {
+        tokens.push(token);
+      }
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.message, "Hello");
+    assert.deepEqual(tokens, ["Hel", "lo"]);
+
+    const usage = (await readFile(path.join(activeTask.dir, "model-usage.jsonl"), "utf8")).trim();
+    assert.match(usage, /"streaming":true/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

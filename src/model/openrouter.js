@@ -414,6 +414,28 @@ export function createOpenRouterAdapter(modelConfig) {
       return capabilities;
     },
 
+    async streamText({ messages, activeTask = null, onToken = () => {}, purpose = "stream" }) {
+      const apiKey = process.env[modelConfig.apiKeyEnv];
+      if (!apiKey || !modelConfig.allowNetwork) {
+        return {
+          ok: false,
+          message: apiKey && !modelConfig.allowNetwork
+            ? "Streaming skipped because network model calls are disabled."
+            : "Streaming skipped because OpenRouter is not configured."
+        };
+      }
+      if (!capabilities.streaming) {
+        return { ok: false, message: "Streaming is not enabled for this model configuration." };
+      }
+
+      try {
+        const text = await requestOpenRouterStream({ apiKey, modelConfig, messages, activeTask, purpose, onToken });
+        return { ok: true, message: text };
+      } catch (error) {
+        return { ok: false, message: `Streaming failed: ${error.message}` };
+      }
+    },
+
     async respond({ userRequest, projectSummary, tools, activeTask, allowedTools = null, onProgress = () => {} }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
@@ -502,21 +524,21 @@ export function createOpenRouterAdapter(modelConfig) {
         const body = await requestOpenRouter({ apiKey, modelConfig, activeTask: context.activeTask, purpose: "critique", messages: [
           {
             role: "system",
-            content: [
-              "You are a senior code reviewer critiquing an AI coding harness task before final review.",
-              "Focus on likely bugs, unrelated behavior changes, weak assumptions, and missing verification.",
-              "Be concise and plain-English. Do not invent facts beyond the provided context."
-            ].join("\n")
+            content: critiqueSystemPrompt(capabilities)
           },
           {
             role: "user",
             content: JSON.stringify(context, null, 2)
           }
-        ], options: { tools: false } });
+        ], options: { tools: false, jsonMode: capabilities.jsonMode } });
+
+        const content = body.choices?.[0]?.message?.content || "Model critique completed with no comments.";
+        const structured = capabilities.jsonMode ? parseStructuredJson(content) : null;
 
         return {
           ok: true,
-          message: body.choices?.[0]?.message?.content || "Model critique completed with no comments."
+          message: structured ? structured.summary || content : content,
+          structured
         };
       } catch (error) {
         return { ok: false, message: `Model critique failed: ${error.message}` };
@@ -695,6 +717,112 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
   return response.json();
 }
 
+async function requestOpenRouterStream({ apiKey, modelConfig, messages, activeTask = null, purpose = "stream", onToken = () => {} }) {
+  const models = modelCandidates(modelConfig);
+  const maxRetries = Number.isInteger(modelConfig.maxRetries) ? modelConfig.maxRetries : 2;
+  let lastError = null;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      try {
+        const text = await streamOpenRouter(apiKey, modelConfig, model, messages, onToken);
+        await recordModelUsage(activeTask, {
+          provider: modelConfig.provider || "openrouter",
+          model,
+          purpose,
+          attempt: attempt + 1,
+          fallback: model !== modelConfig.model,
+          status: "ok",
+          streaming: true
+        });
+        return text;
+      } catch (error) {
+        lastError = error;
+        await recordModelUsage(activeTask, {
+          provider: modelConfig.provider || "openrouter",
+          model,
+          purpose,
+          attempt: attempt + 1,
+          fallback: model !== modelConfig.model,
+          status: "failed",
+          transient: isTransientProviderError(error),
+          streaming: true,
+          error: error.message
+        });
+        if (!isTransientProviderError(error)) throw error;
+        if (attempt < maxRetries) await sleep(retryDelayMs(modelConfig, attempt));
+      }
+    }
+  }
+
+  throw lastError || new Error("OpenRouter stream failed.");
+}
+
+async function streamOpenRouter(apiKey, modelConfig, model, messages, onToken) {
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "http://localhost",
+      "X-Title": "Plain-English AI Coding Harness"
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: true
+    })
+  });
+  if (!response.ok) {
+    const error = new Error(`OpenRouter returned ${response.status}`);
+    error.status = response.status;
+    error.transient = response.status === 429 || response.status >= 500;
+    throw error;
+  }
+  if (!response.body?.getReader) {
+    throw new Error("Provider did not return a readable stream.");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let text = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const token = parseStreamLine(line);
+      if (!token) continue;
+      text += token;
+      onToken(token);
+    }
+  }
+
+  const trailing = parseStreamLine(buffer);
+  if (trailing) {
+    text += trailing;
+    onToken(trailing);
+  }
+  return text;
+}
+
+function parseStreamLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("data:")) return "";
+  const data = trimmed.slice("data:".length).trim();
+  if (!data || data === "[DONE]") return "";
+  try {
+    const parsed = JSON.parse(data);
+    return parsed.choices?.[0]?.delta?.content || "";
+  } catch {
+    return "";
+  }
+}
+
 function modelCandidates(modelConfig) {
   return [
     modelConfig.model,
@@ -843,6 +971,45 @@ function trimToolResult(result) {
     truncated: true,
     preview: json.slice(0, 12000)
   };
+}
+
+function critiqueSystemPrompt(capabilities) {
+  const base = [
+    "You are a senior code reviewer critiquing an AI coding harness task before final review.",
+    "Focus on likely bugs, unrelated behavior changes, weak assumptions, and missing verification.",
+    "Be concise and plain-English. Do not invent facts beyond the provided context."
+  ];
+  if (!capabilities.jsonMode) return base.join("\n");
+  return [
+    ...base,
+    "Return strict JSON with this shape:",
+    JSON.stringify({
+      status: "reviewed",
+      summary: "Short summary.",
+      findings: [{ severity: "warning", text: "Finding text." }],
+      questions: ["Open question."]
+    })
+  ].join("\n");
+}
+
+function parseStructuredJson(content) {
+  try {
+    const parsed = JSON.parse(content);
+    return {
+      status: typeof parsed.status === "string" ? parsed.status : "reviewed",
+      summary: typeof parsed.summary === "string" ? parsed.summary : "Model critique completed.",
+      findings: Array.isArray(parsed.findings) ? parsed.findings.map(normalizeFinding).filter(Boolean) : [],
+      questions: Array.isArray(parsed.questions) ? parsed.questions.filter((q) => typeof q === "string") : []
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeFinding(finding) {
+  if (!finding || typeof finding.text !== "string") return null;
+  const severity = ["error", "warning", "info"].includes(finding.severity) ? finding.severity : "info";
+  return { severity, text: finding.text };
 }
 
 function localHarnessResponse(userRequest, projectSummary, apiKey, allowNetwork) {

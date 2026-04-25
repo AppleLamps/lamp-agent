@@ -1,4 +1,4 @@
-export const MODEL_ADAPTER_METHODS = ["respond", "repair", "critique", "capabilities"];
+export const MODEL_ADAPTER_METHODS = ["respond", "repair", "critique", "streamText", "capabilities"];
 
 export const DEFAULT_MODEL_CAPABILITIES = {
   provider: "unknown",
