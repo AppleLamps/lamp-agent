@@ -58,16 +58,17 @@ Core MVP is implemented and tested. Phase 2 has started.
 
 Most recent completed work:
 
-- better approval and review actions:
-  - approval prompts include `Choose another approach` and `Cancel task`
-  - tool results preserve alternate-approach and cancellation intent
-  - review menus include technical details, changed-file list, conflict resolution, and cancellation
-  - typed fallback commands include `/details`, `/files`, `resolve conflicts`, and `cancel task`
-  - final review cards list the expanded next actions
+- model adapter hardening:
+  - formal adapter contract in `src/model/adapter-contract.js`
+  - OpenRouter capability flags for tool calling, JSON mode, streaming, fallback models, usage, and max context
+  - transient provider retries for `429`, `5xx`, and network/timeout-like failures
+  - fallback model configuration through `model.fallbackModels`
+  - per-task `model-usage.jsonl` plus `model_call` events for usage/cost tracking
+  - `/details` reports recorded model call count and cost
 
 Next recommended work:
 
-1. Model adapter improvements
+1. Continue model adapter improvements: structured output and streaming
 
 Useful commands for the next session:
 
@@ -109,6 +110,7 @@ Implemented:
 - better approval/review actions with richer menus, typed fallbacks, technical details, changed-file lists, and task cancellation
 - styled CLI shell with boxed assistant responses, review cards, `/diff`, review actions, and interactive menus
 - OpenRouter tool-calling loop with network disabled by default
+- model adapter contract, capability flags, transient retry, fallback models, and usage/cost artifacts
 - approval prompts for risky path and command boundaries
 - local fallback response when model network calls are disabled
 
@@ -116,7 +118,7 @@ Known gaps:
 
 - targeted check runner is still basic
 - code intelligence is regex-based; no language-server depth (e.g. cross-file binding resolution)
-- model adapter improvements are still pending: streaming, structured output, retries, fallback models, usage/cost tracking, and provider capability flags
+- model adapter improvements still need structured output support and streaming responses
 - diff/review UX is still basic for nontechnical summaries and blast-radius detail
 
 ## Shadow Workspace

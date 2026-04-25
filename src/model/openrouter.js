@@ -1,4 +1,7 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
 import { appendEvent } from "../log/event-log.js";
+import { assertModelAdapter, normalizeModelCapabilities } from "./adapter-contract.js";
 
 const SYSTEM_PROMPT = `You are an AI coding agent operating inside a permissioned coding harness.
 
@@ -396,7 +399,21 @@ const TOOL_DEFINITIONS = [
 ];
 
 export function createOpenRouterAdapter(modelConfig) {
-  return {
+  const capabilities = normalizeModelCapabilities({
+    provider: "openrouter",
+    toolCalling: modelConfig.capabilities?.toolCalling ?? true,
+    jsonMode: Boolean(modelConfig.capabilities?.jsonMode),
+    streaming: Boolean(modelConfig.capabilities?.streaming),
+    usage: true,
+    fallbackModels: modelConfig.fallbackModels || [],
+    maxContext: modelConfig.maxContext || null
+  });
+
+  return assertModelAdapter({
+    capabilities() {
+      return capabilities;
+    },
+
     async respond({ userRequest, projectSummary, tools, activeTask, allowedTools = null, onProgress = () => {} }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
@@ -421,7 +438,7 @@ export function createOpenRouterAdapter(modelConfig) {
         ];
 
         for (let step = 0; step < 8; step += 1) {
-          const body = await callOpenRouter(apiKey, modelConfig, messages, { allowedTools });
+          const body = await requestOpenRouter({ apiKey, modelConfig, messages, options: { allowedTools }, activeTask, purpose: "respond" });
           const message = body.choices?.[0]?.message;
           if (!message) {
             return {
@@ -482,7 +499,7 @@ export function createOpenRouterAdapter(modelConfig) {
       }
 
       try {
-        const body = await callOpenRouter(apiKey, modelConfig, [
+        const body = await requestOpenRouter({ apiKey, modelConfig, activeTask: context.activeTask, purpose: "critique", messages: [
           {
             role: "system",
             content: [
@@ -495,7 +512,7 @@ export function createOpenRouterAdapter(modelConfig) {
             role: "user",
             content: JSON.stringify(context, null, 2)
           }
-        ], { tools: false });
+        ], options: { tools: false } });
 
         return {
           ok: true,
@@ -543,7 +560,7 @@ export function createOpenRouterAdapter(modelConfig) {
         ];
 
         for (let step = 0; step < 6; step += 1) {
-          const body = await callOpenRouter(apiKey, modelConfig, messages, { allowedTools });
+          const body = await requestOpenRouter({ apiKey, modelConfig, messages, options: { allowedTools }, activeTask, purpose: "repair" });
           const message = body.choices?.[0]?.message;
           if (!message) return { ok: false, message: "Repair model returned no message." };
           messages.push(message);
@@ -571,7 +588,7 @@ export function createOpenRouterAdapter(modelConfig) {
         return { ok: false, message: `Repair failed: ${error.message}` };
       }
     }
-  };
+  });
 }
 
 async function logToolEvent(activeTask, tool, args, status, result = null) {
@@ -604,14 +621,59 @@ function summarizeToolResult(result) {
   };
 }
 
-async function callOpenRouter(apiKey, modelConfig, messages, options = { tools: true }) {
+async function requestOpenRouter({ apiKey, modelConfig, messages, options = { tools: true }, activeTask = null, purpose = "model_call" }) {
+  const models = modelCandidates(modelConfig);
+  const maxRetries = Number.isInteger(modelConfig.maxRetries) ? modelConfig.maxRetries : 2;
+  let lastError = null;
+
+  for (const model of models) {
+    for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+      try {
+        const body = await callOpenRouter(apiKey, modelConfig, model, messages, options);
+        await recordModelUsage(activeTask, {
+          provider: modelConfig.provider || "openrouter",
+          model,
+          purpose,
+          attempt: attempt + 1,
+          fallback: model !== modelConfig.model,
+          usage: normalizeUsage(body.usage),
+          status: "ok"
+        });
+        return body;
+      } catch (error) {
+        lastError = error;
+        await recordModelUsage(activeTask, {
+          provider: modelConfig.provider || "openrouter",
+          model,
+          purpose,
+          attempt: attempt + 1,
+          fallback: model !== modelConfig.model,
+          status: "failed",
+          transient: isTransientProviderError(error),
+          error: error.message
+        });
+        if (!isTransientProviderError(error)) throw error;
+        if (attempt < maxRetries) {
+          await sleep(retryDelayMs(modelConfig, attempt));
+        }
+      }
+    }
+  }
+
+  throw lastError || new Error("OpenRouter request failed.");
+}
+
+async function callOpenRouter(apiKey, modelConfig, model, messages, options = { tools: true }) {
   const body = {
-    model: modelConfig.model,
+    model,
     messages
   };
   if (options.tools !== false) {
     body.tools = filterToolDefinitions(options.allowedTools);
     body.tool_choice = "auto";
+  }
+  if (options.jsonMode && modelConfig.capabilities?.jsonMode) {
+    body.response_format = { type: "json_object" };
   }
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -625,9 +687,66 @@ async function callOpenRouter(apiKey, modelConfig, messages, options = { tools: 
     body: JSON.stringify(body)
   });
   if (!response.ok) {
-    throw new Error(`OpenRouter returned ${response.status}`);
+    const error = new Error(`OpenRouter returned ${response.status}`);
+    error.status = response.status;
+    error.transient = response.status === 429 || response.status >= 500;
+    throw error;
   }
   return response.json();
+}
+
+function modelCandidates(modelConfig) {
+  return [
+    modelConfig.model,
+    ...(Array.isArray(modelConfig.fallbackModels) ? modelConfig.fallbackModels : [])
+  ].filter(Boolean).filter((model, index, list) => list.indexOf(model) === index);
+}
+
+function isTransientProviderError(error) {
+  if (error?.transient) return true;
+  if (error?.status === 429 || error?.status >= 500) return true;
+  return /fetch failed|network|timeout|temporar/i.test(error?.message || "");
+}
+
+function retryDelayMs(modelConfig, attempt) {
+  const base = Number.isFinite(modelConfig.retryBaseDelayMs) ? modelConfig.retryBaseDelayMs : 250;
+  return Math.max(0, base * (2 ** attempt));
+}
+
+function sleep(ms) {
+  if (!ms) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeUsage(usage) {
+  if (!usage) return null;
+  return {
+    prompt_tokens: usage.prompt_tokens ?? usage.input_tokens ?? null,
+    completion_tokens: usage.completion_tokens ?? usage.output_tokens ?? null,
+    total_tokens: usage.total_tokens ?? null,
+    cost: usage.cost ?? null
+  };
+}
+
+async function recordModelUsage(activeTask, entry) {
+  if (!activeTask?.dir) return;
+  const payload = {
+    ...entry,
+    created_at: new Date().toISOString()
+  };
+  await mkdir(activeTask.dir, { recursive: true });
+  await appendFile(path.join(activeTask.dir, "model-usage.jsonl"), `${JSON.stringify(payload)}\n`);
+  await appendEvent(activeTask.dir, {
+    type: "model_call",
+    provider: payload.provider,
+    model: payload.model,
+    purpose: payload.purpose,
+    status: payload.status,
+    transient: payload.transient,
+    fallback: payload.fallback,
+    usage: payload.usage,
+    error: payload.error
+  });
 }
 
 async function executeTool(name, args, { tools, activeTask, allowedTools = null }) {

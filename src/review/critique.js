@@ -8,6 +8,7 @@ export async function critiqueTask({ activeTask, tools, response, model, project
   const checkResults = await readJson(path.join(activeTask.dir, "check-results.json"), []);
   const diff = await tools.taskDiff(activeTask);
   const context = {
+    activeTask,
     task,
     changed_files: changed,
     command_results: summarizeCommands(commands),

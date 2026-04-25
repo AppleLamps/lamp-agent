@@ -22,18 +22,18 @@ Current status:
 
 Where we left off:
 
-- The last completed work added **Better Approval And Review Actions**:
-  - Approval prompts now include `Choose another approach` and `Cancel task`.
-  - Approval denials preserve `alternative_requested` and `cancelled` intent in tool
-    results so model/tool callers can distinguish them from ordinary denial.
-  - Review menus now include `See technical details`, `Open changed file list`,
-    `Resolve apply-back conflict`, and `Cancel task`.
-  - Typed fallback commands now include `/details`, `/files`, `see technical details`,
-    `open changed file list`, `resolve conflicts`, and `cancel task`.
-  - Final review cards list the expanded next actions.
-- Test suite is at 88 tests, all passing.
-- The next AI should continue with **Model Adapter Improvements** (item 9 in the
-  build order) unless the user redirects.
+- The last completed work started **Model Adapter Improvements**:
+  - Added a formal adapter contract in `src/model/adapter-contract.js`.
+  - OpenRouter adapter now exposes provider capability flags for tool calling, JSON mode,
+    streaming, fallback models, usage support, and max context.
+  - OpenRouter calls retry transient failures (`429`, `5xx`, network/timeout-like errors).
+  - Fallback model configuration is supported through `model.fallbackModels`.
+  - Model usage/cost metadata is written to each task's `model-usage.jsonl` and `model_call`
+    events.
+  - `/details` includes recorded model call count and cost.
+- Test suite is at 91 tests, all passing (3 new in `test/model-adapter.test.js`).
+- The next AI should continue the remaining **Model Adapter Improvements** work,
+  especially structured output and streaming, unless the user redirects.
 
 Useful verification command:
 
@@ -63,6 +63,8 @@ The harness now has the core safe coding-agent loop:
   artifacts.
 - Better approval/review actions with richer menus, typed fallbacks, technical details,
   changed-file list shortcuts, alternate-approach approval denial, and task cancellation.
+- Model adapter contract, provider capability flags, transient retry, fallback model
+  configuration, and per-task usage/cost tracking.
 
 Phase 2 should focus on agent capability: helping the model find the right code, understand failures, iterate safely, and deliver working changes more often.
 
@@ -414,6 +416,15 @@ Already implemented:
 - [x] tool calling
 - [x] critique method
 - [x] repair method
+- [x] explicit model adapter interface
+- [x] fallback model configuration
+- [x] usage/cost tracking
+- [x] retry behavior for transient provider failures
+- [x] provider capability flags:
+  - tool calling
+  - JSON mode
+  - streaming
+  - max context
 
 Still pending:
 
@@ -423,17 +434,8 @@ Make model usage more robust and provider-agnostic.
 
 ### Add
 
-- [ ] explicit model adapter interface
 - [ ] structured output support where available
 - [ ] streaming responses
-- [ ] fallback model configuration
-- [ ] usage/cost tracking
-- [ ] retry behavior for transient provider failures
-- [ ] provider capability flags:
-  - tool calling
-  - JSON mode
-  - streaming
-  - max context
 
 ### Definition Of Done
 

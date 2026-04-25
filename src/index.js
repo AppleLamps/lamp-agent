@@ -443,7 +443,9 @@ async function printTechnicalDetails(activeTask, ui) {
   const applyBack = await readJson(path.join(activeTask.dir, "apply-back.json"), null);
   const conflicts = await readJson(path.join(activeTask.dir, "apply-back-conflicts.json"), null);
   const commandLog = await readText(path.join(activeTask.dir, "commands.jsonl"), "");
+  const modelUsage = await readJsonLines(path.join(activeTask.dir, "model-usage.jsonl"));
   const commandCount = commandLog.split(/\r?\n/).filter(Boolean).length;
+  const modelCost = modelUsage.reduce((sum, entry) => sum + (Number(entry.usage?.cost) || 0), 0);
   const completedPhases = Object.values(phases).filter((phase) => phase.state === "completed").map((phase) => phase.phase);
 
   const lines = [
@@ -454,6 +456,8 @@ async function printTechnicalDetails(activeTask, ui) {
     `changed files: ${changed.length}`,
     `checks recorded: ${checks.length}`,
     `commands recorded: ${commandCount}`,
+    `model calls recorded: ${modelUsage.length}`,
+    `model cost recorded: ${modelCost ? modelCost.toFixed(6) : "0"}`,
     `completed phases: ${completedPhases.length ? completedPhases.join(", ") : "none"}`,
     `verification: ${verification?.status || "not recorded"}`,
     `apply-back: ${applyBack?.ok === true ? "applied" : conflicts?.conflicts?.length ? "blocked by conflicts" : "not applied"}`,
@@ -589,6 +593,15 @@ async function readText(filePath, fallback) {
     return await readFile(filePath, "utf8");
   } catch {
     return fallback;
+  }
+}
+
+async function readJsonLines(filePath) {
+  try {
+    const raw = await readFile(filePath, "utf8");
+    return raw.split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  } catch {
+    return [];
   }
 }
 

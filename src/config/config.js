@@ -16,8 +16,17 @@ const DEFAULT_CONFIG = {
   model: {
     provider: "openrouter",
     model: process.env.OPENROUTER_MODEL || "anthropic/claude-3.5-sonnet",
+    fallbackModels: [],
     apiKeyEnv: "OPENROUTER_API_KEY",
-    allowNetwork: false
+    allowNetwork: false,
+    maxRetries: 2,
+    retryBaseDelayMs: 250,
+    maxContext: null,
+    capabilities: {
+      toolCalling: true,
+      jsonMode: false,
+      streaming: false
+    }
   },
   workspace: {
     shadowMode: "off"
@@ -49,7 +58,11 @@ function mergeConfig(base, override) {
     ...base,
     ...override,
     permissions: { ...base.permissions, ...override.permissions },
-    model: { ...base.model, ...override.model },
+    model: {
+      ...base.model,
+      ...override.model,
+      capabilities: { ...base.model.capabilities, ...override.model?.capabilities }
+    },
     workspace: { ...base.workspace, ...override.workspace }
   };
 }
