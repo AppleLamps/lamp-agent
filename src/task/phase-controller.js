@@ -123,6 +123,32 @@ export function createPhaseController(activeTask) {
     },
 
     /**
+     * Mark a phase as `skipped` because it does not apply to this task
+     * (for example, an explain-style request has nothing to verify).
+     * Skipped is treated as a valid predecessor state by the next
+     * phase's `begin`, so the lifecycle can collapse without forcing
+     * every task through every phase.
+     */
+    async skip(phase, reason = "Phase skipped because it does not apply to this task.") {
+      assertKnownPhase(phase);
+      const phases = await readPhaseState(activeTask);
+      phases[phase] = {
+        phase,
+        state: "skipped",
+        skipped_at: new Date().toISOString(),
+        status: TASK_PHASES[phase].status,
+        message: reason
+      };
+      await writePhaseState(activeTask, phases);
+      await appendEvent(activeTask.dir, {
+        type: "phase_skipped",
+        phase,
+        message: reason
+      });
+      return phase;
+    },
+
+    /**
      * Mark whichever phase is currently `in_progress` as `cancelled`
      * (no error is thrown). Callers use this when the user explicitly
      * cancels the task. Returns the cancelled phase name or null when
@@ -251,8 +277,13 @@ function assertKnownPhase(phase) {
 
 function validateCanBegin(phases, phase, context) {
   const previous = previousPhase(phase);
-  if (previous && phases[previous]?.state !== "completed") {
-    throw new Error(`Cannot begin phase ${phase}: previous phase ${previous} is not complete.`);
+  if (previous) {
+    const previousState = phases[previous]?.state;
+    // `skipped` is a valid predecessor state — the lifecycle is allowed
+    // to collapse over phases that do not apply to a given task.
+    if (previousState !== "completed" && previousState !== "skipped") {
+      throw new Error(`Cannot begin phase ${phase}: previous phase ${previous} is not complete.`);
+    }
   }
   if (phase === "patch") validatePatchReadiness(context);
   if (phase === "final_review") validateFinalReviewReadiness(context);

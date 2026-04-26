@@ -174,6 +174,8 @@ async function main() {
     await phaseController.begin("plan");
     const currentPlan = buildTaskPlan({ userRequest: line, projectSummary });
     const riskyBoundaries = identifyRiskyBoundaries({ userRequest: line, projectSummary });
+    const isExplain = activeTask.task.task_type === "explain";
+    const hasRisk = riskyBoundaries.length > 0;
     // Pull the full workspace file list so the planner sees danger
     // zones outside `notableFiles` (for example, a `.env` at the root
     // is filtered out of `notableFiles` but is still relevant for the
@@ -192,11 +194,15 @@ async function main() {
     );
 
     // Optionally enrich the heuristic plan with a model-generated
-    // structured plan. The CLI keeps the heuristic plan as the
-    // authoritative `current_plan` (it works offline and is fast); the
-    // structured plan is persisted as `plan.json` for review.
+    // structured plan, but only when the task crosses a risky
+    // boundary. The structured plan costs a model round-trip and
+    // doesn't change the model's downstream behavior on its own —
+    // for routine no-risk tasks the heuristic plan is enough. The
+    // CLI always keeps the heuristic plan as the authoritative
+    // `current_plan`; when generated, the structured plan is
+    // persisted as `plan.json` for review.
     let modelPlan = null;
-    if (config.model.allowNetwork) {
+    if (config.model.allowNetwork && !isExplain && hasRisk) {
       const planResult = await requestStructuredPlan({
         adapter: model,
         userRequest: line,
@@ -225,35 +231,33 @@ async function main() {
         risky_boundaries: modelPlan.risky_boundaries || []
       } : null
     });
-    if (prePatchPlan.warnings?.length) {
-      // Always show the warnings to the user as informational context.
-      output.write(`${ui.card("pre-patch warnings", formatPrePatchWarnings(prePatchPlan))}\n`);
-      // Only block the patch phase for warnings the planner explicitly
-      // marked `blocking: true` — those are the cases where the
-      // candidate file set genuinely crosses a danger-zone path
-      // (avoid_touching, secret paths, dependency manifests,
-      // lockfiles). Generic risky-boundary tiers describe *operations*
-      // that the harness prompts on later when they run.
-      const blockingWarnings = prePatchPlan.warnings.filter((entry) => entry.blocking === true);
-      if (blockingWarnings.length) {
-        const proceed = await requestApproval(
-          { action: "ask", tier: "pre_patch_warning", reason: prePatchWarningReason(blockingWarnings) },
-          { taskId: activeTask.id }
-        );
-        if (!proceed.approved) {
-          await appendEvent(activeTask.dir, {
-            type: "pre_patch_plan_denied",
-            message: proceed.cancelled
-              ? "User cancelled the task at the pre-patch warning."
-              : proceed.alternative
-                ? "User asked for an alternative approach at the pre-patch warning."
-                : "User denied the pre-patch plan; task halted before patch.",
-            warnings: blockingWarnings
-          });
-          await updateTaskStatus(activeTask, proceed.cancelled ? "cancelled" : "halted_pre_patch");
-          output.write(`${ui.warning("Task halted before any files were touched.")}\n`);
-          continue;
-        }
+    // Surface the warning card and prompt the user only when the
+    // pre-patch plan flags a blocking warning — i.e. the candidate
+    // file set genuinely crosses an `avoid_touching` entry, secret
+    // path, dependency manifest, or lockfile. Operation-tier
+    // boundaries (network / external_publish / dependency_change /
+    // delete) already get a prompt at the moment the operation
+    // actually runs, so an extra up-front card just adds friction.
+    const blockingWarnings = (prePatchPlan.warnings || []).filter((entry) => entry.blocking === true);
+    if (blockingWarnings.length) {
+      output.write(`${ui.card("pre-patch warnings", formatPrePatchWarnings({ warnings: blockingWarnings }))}\n`);
+      const proceed = await requestApproval(
+        { action: "ask", tier: "pre_patch_warning", reason: prePatchWarningReason(blockingWarnings) },
+        { taskId: activeTask.id }
+      );
+      if (!proceed.approved) {
+        await appendEvent(activeTask.dir, {
+          type: "pre_patch_plan_denied",
+          message: proceed.cancelled
+            ? "User cancelled the task at the pre-patch warning."
+            : proceed.alternative
+              ? "User asked for an alternative approach at the pre-patch warning."
+              : "User denied the pre-patch plan; task halted before patch.",
+          warnings: blockingWarnings
+        });
+        await updateTaskStatus(activeTask, proceed.cancelled ? "cancelled" : "halted_pre_patch");
+        output.write(`${ui.warning("Task halted before any files were touched.")}\n`);
+        continue;
       }
     }
     await phaseController.complete("plan", {
@@ -271,11 +275,12 @@ async function main() {
     });
 
     // Optionally request a structured edit-spec from the model
-    // BEFORE any patching happens. The spec is informational at this
-    // stage (the model may diverge during respond) but it's a useful
-    // preview and audit artifact — see `edit-spec.json` under the
-    // task dir.
-    if (config.model.allowNetwork) {
+    // BEFORE any patching happens. Same gating as the structured
+    // plan: only when the task crosses a risky boundary. The spec
+    // is informational (the model may diverge during respond) but
+    // useful for audit when the stakes are high — see
+    // `edit-spec.json` under the task dir.
+    if (config.model.allowNetwork && !isExplain && hasRisk) {
       const specResult = await requestStructuredEditSpec({
         adapter: model,
         userRequest: line,
@@ -345,6 +350,20 @@ async function main() {
       message: response.message
     });
     await phaseController.complete("patch", { assistant_response: response });
+
+    // Adaptive lifecycle: explain-style requests don't need verify /
+    // critique / final_review. The model has already answered with
+    // read-only tools and there is nothing to verify or apply. Skip
+    // those phases (recording them as `skipped` for audit) and let
+    // the user type the next question.
+    if (isExplain) {
+      await phaseController.skip("verify", "Explain-style task: no edits to verify.");
+      await phaseController.skip("critique", "Explain-style task: no patch to critique.");
+      await phaseController.skip("final_review", "Explain-style task: answered inline.");
+      await updateTaskStatus(activeTask, "answered");
+      output.write(`\n${ui.assistant(response.message)}\n\n`);
+      continue;
+    }
 
     output.write(`${ui.progress("Verifying the result")}\n`);
     await phaseController.begin("verify");

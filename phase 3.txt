@@ -69,15 +69,16 @@ Current status:
   optional `blocking: true` flag set when the planner can prove the
   candidate file set crosses a danger-zone path. The CLI's plan phase
   builds the plan, persists `pre-patch-plan.json` to the task dir,
-  prints a "pre-patch warnings" card, and prompts the user before
-  patch begins when any warning is blocking. The phase controller now
-  requires `pre_patch_plan` as a plan-phase output. The runtime
-  exposes a `previewPatch(patch)` method (also surfaced as the
-  `preview_patch` model tool) that projects the diff without writing.
+  and (after the alignment pass) prompts the user only when at least
+  one warning is `blocking: true`. Operation-tier warnings are
+  prompted later when the operation actually runs, so the up-front
+  card is no longer always-on. The phase controller requires
+  `pre_patch_plan` as a plan-phase output. The runtime exposes
+  `previewPatch(patch)` (surfaced as the `preview_patch` model tool).
   A `/plan` CLI shortcut prints the persisted plan. Still TBD for
   item 3: a "preview" review action that shows the next staged patch
-  before apply, and richer pre-patch impact analysis (rename / signature
-  changes that would ripple through the import graph).
+  before apply, and richer pre-patch impact analysis (rename /
+  signature changes that ripple through the import graph).
 - [~] Streaming wired into the CLI (item 4) — foundation in place.
   `requestOpenRouter` routes through a new `streamOpenRouterChat`
   helper when `modelConfig.capabilities.streaming` is true and the
@@ -113,7 +114,7 @@ Current status:
   `respond`/`repair`, and a live-network smoke test gated on
   per-provider env vars.
 - [~] Structured outputs beyond critique (item 6) — plan and
-  edit-spec land this round. `src/model/structured-output.js` defines
+  edit-spec land. `src/model/structured-output.js` defines
   `PLAN_SCHEMA`, `EDIT_SPEC_SCHEMA`, and `REPAIR_FINDINGS_SCHEMA`
   plus a small JSON-Schema-shaped `validate()` and a
   `describeSchema()` helper used to build system prompts. Each
@@ -123,10 +124,12 @@ Current status:
   orchestrate the requests, validate the response, persist
   `plan.json` / `edit-spec.json` under the task dir on success, and
   silently fall back when the model is unavailable, the response
-  isn't JSON, or schema validation fails. The CLI calls both during
-  the plan and patch phases. Still TBD: a structured
-  repair-findings flow (the schema is defined; the wiring is not),
-  and live-network smoke tests.
+  isn't JSON, or schema validation fails. After the alignment pass
+  the CLI only fires these when the task crosses a risky boundary
+  (`riskyBoundaries.length > 0`) — they cost a model round-trip
+  each, and on routine no-risk tasks they were not load-bearing.
+  Still TBD: a structured repair-findings flow (the schema is
+  defined; the wiring is not), and live-network smoke tests.
 - [~] Resumable tasks and cancel-in-flight (item 7) — most pieces
   except `/resume` itself land this round. Phase controller gained
   `markCancelled` and `markInterrupted` helpers; `cancelTask`

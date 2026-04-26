@@ -38,16 +38,23 @@ test("e2e: CLI prints the banner and exits cleanly on /exit", async () => {
   }
 });
 
-test("e2e: CLI walks a task through every phase on a Node fixture", async () => {
+test("e2e: explain-style request takes the short lifecycle (no verify / critique / review card)", async () => {
   const fixture = await copyFixture("node-builtin-test-passing");
   const cli = spawnCli({ cwd: fixture.cwd });
   try {
     await cli.expect(/Lamp Agent/);
     await cli.sendLine("What kind of project is this?");
-    await cli.expect(/Next actions:/, { timeout: 60000 });
+    // The agent prints the answer in an assistant box. No review card
+    // follows because explain tasks short-circuit verify, critique,
+    // and final_review.
+    await cli.expect(/\+-- assistant /, { timeout: 60000 });
     await cli.sendLine("/exit");
     const result = await cli.exit();
     assert.equal(result.code, 0);
+
+    // No "Next actions:" review card is printed for explain tasks.
+    assert.doesNotMatch(cli.stdout(), /Next actions:/,
+      "explain task should not produce a 'Next actions:' review card");
 
     const tasksDir = path.join(fixture.cwd, ".agent", "tasks");
     const taskIds = await readdir(tasksDir);
@@ -56,40 +63,36 @@ test("e2e: CLI walks a task through every phase on a Node fixture", async () => 
 
     const task = JSON.parse(await readFile(path.join(taskDir, "task.json"), "utf8"));
     assert.equal(task.task_type, "explain");
-    assert.equal(task.status, "ready_to_review");
+    assert.equal(task.status, "answered",
+      `explain task should end with status 'answered' (got ${task.status})`);
     assert.ok(Array.isArray(task.current_plan) && task.current_plan.length > 0,
       "task plan should be recorded");
 
     const phases = JSON.parse(await readFile(path.join(taskDir, "phases.json"), "utf8"));
-    for (const phaseName of [
-      "intake", "triage", "plan", "patch", "verify", "critique", "final_review"
-    ]) {
-      assert.equal(phases[phaseName]?.state, "completed",
-        `phase ${phaseName} should be completed (got ${phases[phaseName]?.state})`);
-    }
+    // Triage / plan / patch run; verify / critique / final_review skip.
+    assert.equal(phases.intake?.state, "completed");
+    assert.equal(phases.triage?.state, "completed");
+    assert.equal(phases.plan?.state, "completed");
+    assert.equal(phases.patch?.state, "completed");
+    assert.equal(phases.verify?.state, "skipped");
+    assert.equal(phases.critique?.state, "skipped");
+    assert.equal(phases.final_review?.state, "skipped");
 
     const events = (await readFile(path.join(taskDir, "events.jsonl"), "utf8"))
       .split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
     const eventTypes = new Set(events.map((e) => e.type));
     assert.ok(eventTypes.has("task_created"));
     assert.ok(eventTypes.has("task_plan"));
-    assert.ok(eventTypes.has("verify_started"));
-    assert.ok(eventTypes.has("critique"));
-    const phaseStarted = events.filter((e) => e.type === "phase_started").map((e) => e.phase);
-    assert.ok(phaseStarted.includes("patch"));
-    assert.ok(phaseStarted.includes("final_review"));
+    assert.ok(eventTypes.has("phase_skipped"),
+      "phase_skipped events should be recorded for explain tasks");
+    const skippedPhases = events.filter((e) => e.type === "phase_skipped").map((e) => e.phase).sort();
+    assert.deepEqual(skippedPhases, ["critique", "final_review", "verify"]);
+    // Verify- and critique-specific events do not appear on the
+    // short lifecycle.
+    assert.ok(!eventTypes.has("verify_started"));
+    assert.ok(!eventTypes.has("critique"));
 
-    const checkResults = JSON.parse(await readFile(path.join(taskDir, "check-results.json"), "utf8"));
-    assert.ok(Array.isArray(checkResults) && checkResults.length > 0,
-      "verify phase should record at least one check");
-    assert.ok(checkResults.every((entry) => entry.command),
-      "every check entry should carry the invoking command");
-
-    const finalSummary = await readFile(path.join(taskDir, "final-summary.md"), "utf8");
-    assert.match(finalSummary, /Changed:/);
-    assert.match(finalSummary, /Blast radius:/);
-    assert.match(finalSummary, /Next actions:/);
-
+    // Triage still refreshes project memory.
     const memory = JSON.parse(await readFile(
       path.join(fixture.cwd, ".agent", "memory", "project.json"), "utf8"
     ));
@@ -672,15 +675,19 @@ test("e2e: /tasks lists recent tasks and /show prints details", async () => {
   const cli = spawnCli({ cwd: fixture.cwd });
   try {
     await cli.expect(/Lamp Agent/);
-    // Run a small task so something appears in /tasks.
+    // Run a small explain-style task so something appears in /tasks.
+    // Explain tasks short-circuit to an assistant answer (no review
+    // card), so wait for the assistant box rather than "Next actions:".
     await cli.sendLine("Explain what is in this directory.");
-    await cli.expect(/Next actions:/, { timeout: 60000 });
+    await cli.expect(/\+-- assistant /, { timeout: 60000 });
 
     await cli.sendLine("/tasks");
     await cli.expect(/recent tasks/);
-    // The card should mention the task's status and phase summary.
+    // The card mentions the task id and its terminal status. For
+    // explain tasks the status is `answered` (instead of the
+    // patch-flow `ready_to_review`).
     await cli.expect(/task-\d{8}-\d{6}/);
-    await cli.expect(/status=ready_to_review|\[ready_to_review\]/i);
+    await cli.expect(/\[answered\]/);
 
     // Pull the task id out of the listing for the /show probe.
     const taskIdMatch = cli.stdout().match(/(task-\d{8}-\d{6})/);
@@ -690,7 +697,9 @@ test("e2e: /tasks lists recent tasks and /show prints details", async () => {
     await cli.sendLine(`/show ${taskId}`);
     await cli.expect(new RegExp(`task ${taskId.replace(/-/g, "\\-")}`));
     await cli.expect(/Phases:/);
-    await cli.expect(/final_review: completed/);
+    // /show should reflect the skipped final_review for an explain
+    // task.
+    await cli.expect(/final_review: skipped/);
 
     await cli.sendLine("/exit");
     const result = await cli.exit();
@@ -701,13 +710,14 @@ test("e2e: /tasks lists recent tasks and /show prints details", async () => {
   }
 });
 
-test("e2e: CLI runs against a non-git plain directory", async () => {
+test("e2e: explain-style request on a non-git plain directory short-circuits to an answer", async () => {
   const fixture = await copyFixture("non-git-plain");
   const cli = spawnCli({ cwd: fixture.cwd });
   try {
     await cli.expect(/Lamp Agent/);
     await cli.sendLine("Explain what is in this directory.");
-    await cli.expect(/Next actions:/, { timeout: 60000 });
+    // Explain task: agent answers in an assistant box, no review card.
+    await cli.expect(/\+-- assistant /, { timeout: 60000 });
     await cli.sendLine("/exit");
     const result = await cli.exit();
     assert.equal(result.code, 0);
@@ -718,11 +728,14 @@ test("e2e: CLI runs against a non-git plain directory", async () => {
     const taskDir = path.join(tasksDir, taskIds[0]);
 
     const task = JSON.parse(await readFile(path.join(taskDir, "task.json"), "utf8"));
-    assert.equal(task.status, "ready_to_review");
+    assert.equal(task.task_type, "explain");
+    assert.equal(task.status, "answered");
 
     const phases = JSON.parse(await readFile(path.join(taskDir, "phases.json"), "utf8"));
-    assert.equal(phases.final_review?.state, "completed");
+    assert.equal(phases.patch?.state, "completed");
+    assert.equal(phases.final_review?.state, "skipped");
 
+    // Checkpoint still records the non-git workspace type.
     const checkpointsDir = path.join(fixture.cwd, ".agent", "checkpoints");
     const checkpointFiles = await readdir(checkpointsDir);
     assert.ok(checkpointFiles.length >= 1, "checkpoint should be recorded for non-git workspace");

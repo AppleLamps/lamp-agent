@@ -64,11 +64,32 @@ real repository through the full lifecycle, swap providers, stream
 responses, cancel mid-flight, and persist structured plan / edit-spec
 artifacts alongside the existing critique output.
 
-Latest verified baseline: `npm test` passes with 190 tests (includes
+Most recent change is an alignment pass that trims phase-3 ceremony
+back toward the Codex / Claude Code shape: the lifecycle is now
+adaptive (explain-style requests skip verify / critique / review),
+the structured plan and edit-spec only fire when the task crosses a
+risky boundary, the pre-patch warnings card only prints on a
+genuinely blocking finding, and the system prompt reads as "you're a
+coding assistant; here are your tools" rather than "you operate
+inside a permissioned harness".
+
+Latest verified baseline: `npm test` passes with 191 tests (includes
 e2e); `npm run test:e2e` runs 14 end-to-end tests against four
-fixture repositories. Latest pushed commit: `b4e910f Land
-cancellation, listing, and alt-approach belief (Phase 3 item 7)` on
-`main`.
+fixture repositories. Latest pushed commit: `202ae6b Tighten Phase 3
+handoff docs` on `main`.
+
+### Lifecycle shape
+
+For routine tasks the lifecycle is intentionally lightweight: an
+explain-style question (`why…`, `where…`, `what kind of…`,
+`how does…`) takes the short path of triage → plan → patch → answer
+and skips verify, critique, and the review card. Only tasks that
+actually edit files run the full pipeline (verify-and-repair, model
+critique, boxed review with `accept` / `adjust` / `undo` actions).
+Tasks that touch a risky boundary (dependencies, network, secrets,
+deletions, push/deploy) additionally request a structured plan and
+edit-spec from the model and persist them as `plan.json` and
+`edit-spec.json`.
 
 ### What landed in Phase 3 (per item)
 
@@ -122,10 +143,11 @@ cancellation, listing, and alt-approach belief (Phase 3 item 7)` on
   `src/model/structured-output.js` defines `PLAN_SCHEMA`,
   `EDIT_SPEC_SCHEMA`, `REPAIR_FINDINGS_SCHEMA` plus a small
   JSON-Schema-shaped validator. Each adapter exposes `respondJson({
-  system, user })`. The CLI persists `plan.json` and `edit-spec.json`
-  during plan and patch phases when the network is enabled; failures
-  silently fall back. **Open**: wire `repair_findings` (schema is
-  defined) into `verifyAndRepair` and the review surface.
+  system, user })`. The CLI requests these only when the task crosses
+  a risky boundary (`riskyBoundaries.length > 0`); on success they
+  persist as `plan.json` / `edit-spec.json` under the task dir. No
+  risk and no model round-trip. **Open**: wire `repair_findings`
+  (schema is defined) into `verifyAndRepair` and the review surface.
 - **Item 7 — Resumable tasks and cancel-in-flight.** Phase
   controller gained `markCancelled` / `markInterrupted`; `cancelTask`
   flips the in-progress phase before flipping the task status. SIGINT

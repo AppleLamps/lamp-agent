@@ -156,6 +156,49 @@ test("phase controller markCancelled flips the in-progress phase to cancelled", 
   }
 });
 
+test("phase controller skip lets the next phase begin without re-running the skipped one", async () => {
+  const cwd = await makeDir();
+  try {
+    await writeFile(path.join(cwd, "package.json"), JSON.stringify({ scripts: {} }));
+    const activeTask = await createTask(cwd, "Skip a phase");
+    const controller = await initializePhaseController(activeTask);
+    await controller.begin("triage");
+    await controller.complete("triage", { project_summary: { fileCount: 1, notableFiles: ["package.json"] } });
+    await controller.begin("plan");
+    await controller.complete("plan", {
+      current_plan: ["x"],
+      risky_boundaries: [],
+      pre_patch_plan: { expected_scope: { candidate_files: [], risk_labels: [], predicted_checks: [] } }
+    });
+    await controller.begin("patch", {
+      task_type: "explain",
+      project_summary: { notableFiles: ["package.json"] },
+      inspected_files: ["package.json"],
+      current_plan: ["x"],
+      risky_boundaries: []
+    });
+    await controller.complete("patch", { assistant_response: { message: "answer" } });
+
+    // Skip verify; the next begin (critique) should accept this as a
+    // valid predecessor state.
+    const skipped = await controller.skip("verify", "explain task — no edits");
+    assert.equal(skipped, "verify");
+    const phases = JSON.parse(await readFile(path.join(activeTask.dir, "phases.json"), "utf8"));
+    assert.equal(phases.verify.state, "skipped");
+    assert.equal(phases.verify.message, "explain task — no edits");
+
+    // Critique can begin even though verify never completed.
+    await controller.begin("critique");
+    await controller.complete("critique", { critique: { status: "reviewed" } });
+
+    const events = (await readFile(path.join(activeTask.dir, "events.jsonl"), "utf8"))
+      .trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.ok(events.some((event) => event.type === "phase_skipped" && event.phase === "verify"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("phase controller markInterrupted captures partial state without erroring", async () => {
   const cwd = await makeDir();
   try {

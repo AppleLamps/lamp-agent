@@ -28,8 +28,7 @@ import { TOOL_DEFINITIONS, executeTool } from "./openrouter.js";
 
 const DEFAULT_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
-const SYSTEM_PROMPT = `You are an AI coding agent operating inside a permissioned coding harness.
-Use tools to inspect the workspace and make minimal reversible changes. Speak in product-level language. Distinguish facts from guesses.`;
+const SYSTEM_PROMPT = `You are a coding assistant working in the user's terminal. They communicate in plain English; reply at that level. Use the available tools to read, search, and edit files in their workspace, run their tests, and inspect git state — never claim to have read a file you have not. Prefer minimal reversible changes and be honest about what you have verified vs. what you are guessing.`;
 
 export function createAnthropicAdapter(modelConfig = {}) {
   const capabilities = normalizeModelCapabilities({
