@@ -221,6 +221,13 @@ function keywordCandidates(userRequest, allFiles) {
   if (!tokens.length) return [];
   const hits = [];
   for (const file of allFiles) {
+    // Manifests and lockfiles must enter the candidate set only via
+    // an explicit dependency-change signal in the user request — not
+    // via a substring match. Otherwise a request like "fix the
+    // package list bug" would pull `package.json` into scope and
+    // trigger the manifest blocker on a routine edit.
+    const base = baseName(file);
+    if (MANIFEST_NAMES.has(base) || LOCKFILE_NAMES.has(base)) continue;
     const lower = file.toLowerCase();
     for (const token of tokens) {
       if (lower.includes(token)) {

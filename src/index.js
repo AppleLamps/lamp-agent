@@ -215,16 +215,18 @@ async function main() {
       `${JSON.stringify(prePatchPlan, null, 2)}\n`
     );
 
-    // Optionally enrich the heuristic plan with a model-generated
-    // structured plan, but only when the task crosses a risky
-    // boundary. The structured plan costs a model round-trip and
-    // doesn't change the model's downstream behavior on its own —
-    // for routine no-risk tasks the heuristic plan is enough. The
-    // CLI always keeps the heuristic plan as the authoritative
-    // `current_plan`; when generated, the structured plan is
-    // persisted as `plan.json` for review.
+    // Optional structured plan: opt-in via `model.structuredAuditOutputs = true`.
+    // The structured plan costs an extra model round-trip and the
+    // model's downstream tool use during patch is not driven by it
+    // (the heuristic plan + project summary + pre-patch plan already
+    // shape behavior). Off by default so routine tasks stay direct.
     let modelPlan = null;
-    if (config.model.allowNetwork && !isExplain && hasRisk) {
+    if (
+      config.model.allowNetwork
+      && !isExplain
+      && hasRisk
+      && config.model.structuredAuditOutputs
+    ) {
       const planResult = await requestStructuredPlan({
         adapter: model,
         userRequest: line,
@@ -296,13 +298,17 @@ async function main() {
       risky_boundaries: riskyBoundaries
     });
 
-    // Optionally request a structured edit-spec from the model
-    // BEFORE any patching happens. Same gating as the structured
-    // plan: only when the task crosses a risky boundary. The spec
-    // is informational (the model may diverge during respond) but
-    // useful for audit when the stakes are high — see
-    // `edit-spec.json` under the task dir.
-    if (config.model.allowNetwork && !isExplain && hasRisk) {
+    // Optional structured edit-spec — same opt-in as the structured
+    // plan (`model.structuredAuditOutputs`). Off by default: the
+    // model's narrative + tool calls are the source of truth for
+    // what edits happen, so a separate JSON pre-declaration mostly
+    // burns a round-trip without shaping behavior.
+    if (
+      config.model.allowNetwork
+      && !isExplain
+      && hasRisk
+      && config.model.structuredAuditOutputs
+    ) {
       const specResult = await requestStructuredEditSpec({
         adapter: model,
         userRequest: line,
@@ -327,6 +333,7 @@ async function main() {
       response = await model.respond({
         userRequest: line,
         projectSummary,
+        prePatchPlan,
         tools: activeTools,
         activeTask,
         allowedTools: TASK_PHASES.patch.allowedTools,
@@ -485,10 +492,13 @@ Review actions:
 Ask in plain English, for example:
   Explain what kind of project this is
   Find where authentication is implemented
-  Run the available checks
+  Fix the failing login test
+  Add a /healthz route to the API
+  Refactor the user service to use async/await
 
-This MVP can inspect files, create task records, run safe local checks, and undo
-tracked file edits. Model-backed code editing is scaffolded behind the adapter.
+The agent reads, edits, and tests files in this workspace through tools.
+Risky actions (dependency changes, network commands, secret-file access,
+push/deploy) prompt for approval; destructive patterns are blocked outright.
 `)}\n`);
 }
 
@@ -748,7 +758,12 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
       risky_boundaries: riskyBoundaries
     });
 
-    if (config.model.allowNetwork && !isExplain && hasRisk) {
+    if (
+      config.model.allowNetwork
+      && !isExplain
+      && hasRisk
+      && config.model.structuredAuditOutputs
+    ) {
       const specResult = await requestStructuredEditSpec({
         adapter: model,
         userRequest: line,
@@ -767,6 +782,7 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
       response = await model.respond({
         userRequest: line,
         projectSummary,
+        prePatchPlan,
         tools,
         activeTask,
         allowedTools: TASK_PHASES.patch.allowedTools,

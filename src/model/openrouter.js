@@ -561,27 +561,29 @@ export function createOpenRouterAdapter(modelConfig) {
       }
     },
 
-    async respond({ userRequest, projectSummary, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken = null, signal = null }) {
+    async respond({ userRequest, projectSummary, prePatchPlan = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
         return localHarnessResponse(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
       }
 
       try {
+        const userContent = [
+          `User request: ${userRequest}`,
+          "",
+          "Initial project summary:",
+          JSON.stringify(projectSummary, null, 2),
+          "",
+          "Persisted project memory:",
+          JSON.stringify(projectSummary.memory || null, null, 2)
+        ];
+        const planContext = compactPrePatchPlanForModel(prePatchPlan);
+        if (planContext) {
+          userContent.push("", "Pre-patch plan (heuristic, advisory):", planContext);
+        }
         const messages = [
           { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: [
-              `User request: ${userRequest}`,
-              "",
-              "Initial project summary:",
-              JSON.stringify(projectSummary, null, 2),
-              "",
-              "Persisted project memory:",
-              JSON.stringify(projectSummary.memory || null, null, 2)
-            ].join("\n")
-          }
+          { role: "user", content: userContent.join("\n") }
         ];
 
         for (let step = 0; step < 8; step += 1) {
@@ -1360,6 +1362,33 @@ function filterToolDefinitions(allowedTools) {
   if (!allowedTools) return TOOL_DEFINITIONS;
   const allowed = new Set(allowedTools);
   return TOOL_DEFINITIONS.filter((tool) => allowed.has(tool.function.name));
+}
+
+/**
+ * Render a compact form of the pre-patch plan that the model can
+ * actually use during the patch phase. Skips fields that would just
+ * burn tokens (full warning records, timestamps) and keeps only
+ * what shapes behavior: expected candidate files, danger zones to
+ * avoid, and active risk labels.
+ *
+ * Returns `null` when there's nothing useful to add.
+ */
+export function compactPrePatchPlanForModel(plan) {
+  if (!plan || typeof plan !== "object") return null;
+  const expected = plan.expected_scope || {};
+  const candidates = Array.isArray(expected.candidate_files) ? expected.candidate_files.slice(0, 12) : [];
+  const danger = plan.danger_zones || {};
+  const avoidTouching = Array.isArray(danger.avoid_touching) ? danger.avoid_touching : [];
+  const secrets = Array.isArray(danger.secret_paths) ? danger.secret_paths : [];
+  const risks = Array.isArray(expected.risk_labels) ? expected.risk_labels : [];
+  const lines = [];
+  if (candidates.length) lines.push(`Likely scope: ${candidates.join(", ")}`);
+  if (risks.length) lines.push(`Risk labels: ${risks.join(", ")}`);
+  if (avoidTouching.length) lines.push(`Avoid touching (project memory): ${avoidTouching.join(", ")}`);
+  if (secrets.length) lines.push(`Secret-bearing paths in workspace: ${secrets.join(", ")}`);
+  if (!lines.length) return null;
+  lines.push("This plan is heuristic. Expand or narrow scope as the work demands; do not treat the file list as a hard limit.");
+  return lines.join("\n");
 }
 
 function parseToolArgs(raw) {

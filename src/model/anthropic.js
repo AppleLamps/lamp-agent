@@ -30,7 +30,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "../log/event-log.js";
 import { assertModelAdapter, normalizeModelCapabilities } from "./adapter-contract.js";
-import { TOOL_DEFINITIONS, executeTool } from "./openrouter.js";
+import { TOOL_DEFINITIONS, executeTool, compactPrePatchPlanForModel } from "./openrouter.js";
 
 const DEFAULT_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -94,22 +94,24 @@ export function createAnthropicAdapter(modelConfig = {}) {
       }
     },
 
-    async respond({ userRequest, projectSummary, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken: _onToken = null, signal = null }) {
+    async respond({ userRequest, projectSummary, prePatchPlan = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken: _onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
       if (!apiKey || !modelConfig.allowNetwork) {
         return localFallback(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
       }
       try {
+        const userContent = [
+          `User request: ${userRequest}`,
+          "",
+          "Initial project summary:",
+          JSON.stringify(projectSummary, null, 2)
+        ];
+        const planContext = compactPrePatchPlanForModel(prePatchPlan);
+        if (planContext) {
+          userContent.push("", "Pre-patch plan (heuristic, advisory):", planContext);
+        }
         const messages = [
-          {
-            role: "user",
-            content: [
-              `User request: ${userRequest}`,
-              "",
-              "Initial project summary:",
-              JSON.stringify(projectSummary, null, 2)
-            ].join("\n")
-          }
+          { role: "user", content: userContent.join("\n") }
         ];
         const tooling = anthropicTools(allowedTools);
 

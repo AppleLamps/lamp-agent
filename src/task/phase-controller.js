@@ -290,12 +290,12 @@ function validateCanBegin(phases, phase, context) {
 }
 
 function validatePatchReadiness(context) {
-  const inspected = context.inspected_files || context.project_summary?.notableFiles || [];
-  const taskType = context.task_type || "";
-  const isDocsOrSetup = /docs?|setup|explain/.test(taskType);
-  if (!isDocsOrSetup && !inspected.length) {
-    throw new Error("Cannot begin patch: no relevant files were recorded during triage.");
-  }
+  // We intentionally do NOT require `inspected_files` to be non-empty.
+  // Triage may legitimately produce zero "notable" files on a tiny or
+  // unusual repo (a fresh project, a single-file script, an empty
+  // directory the user is starting from). The model can call
+  // `list_files` itself once the patch phase begins; throwing here
+  // would block legitimate work on minimal workspaces.
   if (!context.current_plan?.length) {
     throw new Error("Cannot begin patch: no current plan is recorded.");
   }
