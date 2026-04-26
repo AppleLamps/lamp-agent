@@ -41,6 +41,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
     cwd,
     config,
     permissions,
+    getCodeIndex,
 
     async listFiles(relativePath = ".") {
       const allowed = permissions.classifyPath(relativePath, "read");

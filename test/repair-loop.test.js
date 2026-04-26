@@ -92,6 +92,60 @@ test("verifyAndRepair passes a summarized structured failure into model.repair",
   }
 });
 
+test("verifyAndRepair passes the failed test import graph into model.repair", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-"));
+  try {
+    const activeTask = await createTask(cwd, "Fix failing import-backed test");
+    const tools = {
+      runAvailableChecks: async () => [{
+        name: "test",
+        ok: false,
+        parsed: {
+          check_type: "test",
+          status: "failed",
+          failed_files: ["test/foo.test.js"],
+          likely_relevant_files: ["src.js"]
+        }
+      }],
+      getCodeIndex: async () => ({
+        files: ["test/foo.test.js", "src.js", "helper.js", "test-setup.js"],
+        imports: new Map([
+          ["test/foo.test.js", [
+            { source: "../src.js", names: [{ name: "foo", kind: "named" }], kind: "import", line: 1 },
+            { source: "../helper.js", names: [{ name: "helper", kind: "named" }], kind: "import", line: 2 },
+            { source: "../test-setup.js", names: [{ name: "ready", kind: "named" }], kind: "import", line: 3 },
+            { source: "node:test", names: [], kind: "import", line: 4 }
+          ]]
+        ])
+      })
+    };
+
+    let captured = null;
+    const model = {
+      repair: async (args) => {
+        captured = args;
+        return { ok: false, noop: true, message: "stub: stop after one attempt." };
+      }
+    };
+
+    await verifyAndRepair({
+      activeTask,
+      tools,
+      model,
+      userRequest: "Fix failing import-backed test",
+      projectSummary: {},
+      maxAttempts: 1
+    });
+
+    const summary = captured.failedChecks[0];
+    assert.deepEqual(summary.import_graph, {
+      "test/foo.test.js": ["src.js", "helper.js", "test-setup.js"]
+    });
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("verifyAndRepair records failure when repair is unavailable", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-"));
   try {

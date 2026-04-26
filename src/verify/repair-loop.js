@@ -22,6 +22,7 @@ export async function verifyAndRepair({
   let failed = failedChecks(checks);
   // Record the runner info once for context in repair loops
   const testRunnerInfo = tools.detectTestRunner ? await tools.detectTestRunner().catch(() => null) : null;
+  const codeIndex = tools.getCodeIndex ? await tools.getCodeIndex().catch(() => null) : null;
   const attempts = [];
 
   if (!failed.length) {
@@ -53,9 +54,9 @@ export async function verifyAndRepair({
         // Pass a compact, structured failure shape to the model rather
         // than the full parsed record. The model gets the structured
         // errors[], failed_files, expected/actual, and the
-        // provenance-tagged likely_relevant_files, but no
-        // raw-output paths or timestamps.
-        failedChecks: failed.map((check) => summarizeFailureForRepair(check.parsed || check)),
+        // provenance-tagged likely_relevant_files/import_graph, but
+        // no raw-output paths or timestamps.
+        failedChecks: failed.map((check) => summarizeFailureForRepair(check.parsed || check, { codeIndex })),
         testRunner: testRunnerInfo,
         attempt,
         maxAttempts,

@@ -101,6 +101,29 @@ test("summarizeFailureForRepair caps long lists so prompts stay bounded", () => 
   assert.equal(summary.likely_relevant_files.length, 20);
 });
 
+test("summarizeFailureForRepair attaches resolved internal imports for failed files", () => {
+  const codeIndex = {
+    files: ["test/foo.test.js", "src/foo.js", "src/helper.js"],
+    imports: new Map([
+      ["test/foo.test.js", [
+        { source: "../src/foo.js", names: [{ name: "foo", kind: "named" }], kind: "import", line: 1 },
+        { source: "../src/helper", names: [{ name: "helper", kind: "named" }], kind: "import", line: 2 },
+        { source: "node:test", names: [], kind: "import", line: 3 }
+      ]]
+    ])
+  };
+
+  const summary = summarizeFailureForRepair({
+    status: "failed",
+    check_type: "test",
+    failed_files: ["test/foo.test.js", "test/missing.test.js"]
+  }, { codeIndex });
+
+  assert.deepEqual(summary.import_graph, {
+    "test/foo.test.js": ["src/foo.js", "src/helper.js"]
+  });
+});
+
 test("summarizeFailureForRepairWithSnippet appends a tail of the raw output", () => {
   const stderr = Array.from({ length: 50 }, (_, index) => `line ${index + 1}`).join("\n");
   const summary = summarizeFailureForRepairWithSnippet(

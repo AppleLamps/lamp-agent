@@ -13,35 +13,23 @@ the sub-bullets. The high-level checklist immediately below mirrors that.
 
 ## Resume Point For The Next Agent
 
-- **Latest pushed commit:** `d0549fe Surface rename impact in the
-  pre-patch plan` on `main`.
-- **Test baseline:** `npm test` → 209 unit tests pass (1 skipped, 0
+- **Latest completed slice:** repair-loop import graph integration.
+- **Test baseline:** `npm test` → 211 unit tests pass (0 skipped, 0
   failing); `npm run test:e2e` → 14 e2e tests pass.
 - **Last two slices in order:**
-  1. `31a4878` Cross-file symbol binding — shared
-     `src/code/import-resolver.js` plus `findSymbolCallers` /
-     `findSymbolDependencies` in `src/code/code-index.js`, exposed
-     as `tools.*` and as the `symbol_callers` /
-     `symbol_dependencies` model tools.
-  2. `d0549fe` Rename impact in the pre-patch plan — sync
+  1. `d0549fe` Rename impact in the pre-patch plan — sync
      `listSymbolImpact` walks the import graph; the plan adds
      affected files to `expected_scope.candidate_files` and emits
      a `rename_impact` warning (blocking when there are
      cross-file callers).
+  2. Repair-loop import graph integration — `summarizeFailureForRepair`
+     accepts `{ codeIndex }`, attaches failed test files' resolved
+     internal imports as `import_graph`, and `verifyAndRepair`
+     threads the runtime code index into the `model.repair` payload.
 
-- **Recommended next slice:** repair-loop integration with the
-  import graph (item 8, see Item 8 section below for the file-
-  level plan). The bones are already in place:
-  `summarizeFailureForRepair` in `src/checks/failure-summary.js`
-  is the single point that builds the input to `model.repair`;
-  extend it to call `findSymbolDependencies` for each entry in
-  `parsed.failed_files` and attach the resolved internal imports
-  as `import_graph`. Thread the runtime's `codeIndex` through
-  `src/verify/repair-loop.js`. Add tests in
-  `test/failure-summary.test.js` and `test/repair-loop.test.js`.
-- **After that:** `/resume <task-id>` (item 7 leftover — needs the
-  main-loop refactor into `runTaskLifecycle({...})`), then the
-  rest of item 8 (signature-change impact, `dependency_graph`,
+- **Recommended next slice:** `/resume <task-id>` (item 7 leftover —
+  needs the main-loop refactor into `runTaskLifecycle({...})`), then
+  the rest of item 8 (signature-change impact, `dependency_graph`,
   `component_map`, tsconfig-paths, Python imports).
 
 Current status:
@@ -52,7 +40,7 @@ Current status:
   (non-git plain, Node passing, Node failing, pytest failing), pluggable
   model adapter factory (`src/model/index.js`) plus a stub adapter and
   script helper (`test/e2e/helpers/stub-adapter.js`, `stub-script.js`),
-  and 13 e2e tests covering banner+exit, full lifecycle, failing-verify
+  and 14 e2e tests covering banner+exit, full lifecycle, failing-verify
   path, non-git workspace, destructive command block, malformed patch
   reject, stub-driven file create with verify, dependency-change approval
   (denied), secret-file approval (denied), external-publish (push)
@@ -177,8 +165,8 @@ Current status:
   <task-id>` (requires extracting the task lifecycle into a
   function so a partially-completed task can pick up at the next
   not-completed phase).
-- [~] Dependency-aware edits and cross-file binding (item 8) — first
-  two slices land (cross-file binding + rename impact).
+- [~] Dependency-aware edits and cross-file binding (item 8) — three
+  slices land (cross-file binding, rename impact, repair import graph).
   `src/code/import-resolver.js` is the new shared resolver: relative-import sources resolve against the workspace
   file set with the standard `.ts/.tsx/.js/.jsx/.mjs/.cjs` extension
   list and an `index.<ext>` fallback; `src/checks/relevant-files.js`
@@ -205,20 +193,16 @@ Current status:
   rename-impact tests in `test/pre-patch-plan.test.js`. Still
   open: `dependency_graph(path?)` aggregator, `component_map()`
   tool, signature-change impact (renames covered; arg-list
-  rewrites not yet), repair-loop integration that hands the
-  import graph of the failing test to `model.repair`,
-  tsconfig-paths alias resolution, and Python
+  rewrites not yet), tsconfig-paths alias resolution, and Python
   `from x import y` resolution.
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
 - [ ] GitHub/CI integration (item 10) — not started.
 
 Where we are now:
 
-- Latest verified baseline: `npm test` passes with 209 unit tests
-  (1 skipped, 0 failing). `npm run test:e2e` runs 14 end-to-end
-  tests against four fixture repositories. Latest pushed commit:
-  `31a4878 Add cross-file symbol binding (Phase 3 item 8)` on
-  `main`.
+- Latest verified baseline: `npm test` passes with 211 unit tests
+  (0 skipped, 0 failing). `npm run test:e2e` runs 14 end-to-end
+  tests against four fixture repositories.
 - The Phase 2 baseline (seven-phase lifecycle, structured task
   artifacts, snapshot-based undo, shadow workspace, regex
   code-intel, targeted check runner, bounded repair loop, styled
@@ -286,24 +270,14 @@ exact `[x]` / `[~]` / `[ ]` state. Items 9–10 are not yet started.
 
 Recommended next steps in priority order:
 
-1. **Repair-loop integration with the import graph (item 8).** The
-   recommended next slice. See "Resume Point For The Next Agent"
-   above for the file-level plan: extend
-   `summarizeFailureForRepair` in `src/checks/failure-summary.js`
-   to call `findSymbolDependencies({ codeIndex, file })` for every
-   entry in `parsed.failed_files` and attach the internal-only
-   resolved imports as `import_graph`. Thread the runtime's
-   cached `codeIndex` through `src/verify/repair-loop.js` (it
-   already passes through to `runCheckCommand`). Add tests in
-   `test/failure-summary.test.js` and `test/repair-loop.test.js`.
-2. Item 7 leftover: implement `/resume <task-id>`. Requires
+1. Item 7 leftover: implement `/resume <task-id>`. Requires
    extracting the main-loop body in `src/index.js` into a
    `runTaskLifecycle({...})` function so a partially-completed
    task picks up at the next not-completed phase using artifacts
    already on disk. Phase controller is ready —
    `validateCanBegin` already accepts both `completed` and
    `skipped` predecessors, so no controller changes are needed.
-3. Remaining item 8 leftovers: signature-change impact
+2. Remaining item 8 leftovers: signature-change impact
    (parameter list / return type rewrites — distinct from
    rename, requires the model's edit-spec or a pre-edit AST
    diff), the `dependency_graph(path?)` aggregator, the
@@ -311,20 +285,20 @@ Recommended next steps in priority order:
    resolution (extend `src/code/import-resolver.js`), Python
    `from x import y` resolution, and re-export / dynamic-import
    coverage tests.
-4. Item 6 leftover: wire `repair_findings` (schema is defined in
+3. Item 6 leftover: wire `repair_findings` (schema is defined in
    `src/model/structured-output.js`) into `verifyAndRepair` and
    the review surface.
-5. Item 5 leftovers: Anthropic prompt caching
+4. Item 5 leftovers: Anthropic prompt caching
    (`anthropic-beta: prompt-caching-2024-07-31`), Anthropic
    streaming inside `respond`/`repair`, live-network smoke test.
-6. Item 4 leftover: streaming-aware `ui.assistant`, streaming
+5. Item 4 leftover: streaming-aware `ui.assistant`, streaming
    the repair loop's model calls.
-7. Item 3 leftover: a "preview" review action that shows the next
+6. Item 3 leftover: a "preview" review action that shows the next
    staged patch before apply.
-8. Item 2 stragglers: pytest JUnit wiring (needs tmp-file
+7. Item 2 stragglers: pytest JUnit wiring (needs tmp-file
    capture, since pytest doesn't write JUnit to stdout) and
    ESLint structured wiring.
-9. Items 9 (real LSP integration) and 10 (GitHub/CI integration)
+8. Items 9 (real LSP integration) and 10 (GitHub/CI integration)
    are sized as their own future rounds.
 
 ---
@@ -899,9 +873,8 @@ finished.
 
 Status: in progress. Cross-file binding and the two foundational
 tools (`symbol_callers`, `symbol_dependencies`) land this round;
-`dependency_graph`, `component_map`, pre-patch rename impact,
-repair-loop integration, tsconfig-paths, and Python resolution are
-still open.
+`dependency_graph`, `component_map`, signature-change impact,
+tsconfig-paths, and Python resolution are still open.
 
 ### Goal
 
@@ -967,24 +940,16 @@ breakage.
   - [ ] Signature-change impact (parameter list / return type
         rewrites) — distinct from rename, requires the model's
         edit-spec or a pre-edit AST diff to detect.
-- [ ] Repair-loop hint: pass the resolved import graph of the failing test
+- [x] Repair-loop hint: pass the resolved import graph of the failing test
   into `model.repair` so the model edits the right source file on the first
-  attempt. **This is the recommended next slice.** Concrete plan:
-  (1) extend `summarizeFailureForRepair(parsed, { codeIndex } = {})`
-  in `src/checks/failure-summary.js` to call
-  `findSymbolDependencies({ codeIndex, file })` for every entry in
-  `parsed.failed_files`, keeping only the internal (resolved)
-  dependencies, and attach them as
+  attempt. `summarizeFailureForRepair(parsed, { codeIndex })` calls
+  `findSymbolDependencies({ codeIndex, file })` for each indexed
+  failed file, keeps only internal resolved imports, and attaches
   `import_graph: { <test-file>: [<resolved>...] }` on the summary.
-  (2) Thread the runtime's cached `codeIndex` through
-  `src/verify/repair-loop.js` (it already reaches the runtime via
-  `runCheckCommand`). (3) Add unit tests in
-  `test/failure-summary.test.js` (build a hand-crafted Map-backed
-  index like the rename-impact tests do, assert the resolved
-  imports are attached), plus an integration test in
-  `test/repair-loop.test.js` that captures the argument
-  `model.repair` actually receives and asserts `import_graph` is
-  present.
+  `src/verify/repair-loop.js` threads the runtime's cached code
+  index into the summarizer before invoking `model.repair`. Covered
+  by tests in `test/failure-summary.test.js` and
+  `test/repair-loop.test.js`.
 - [x] Tests with imports across folders, default vs named imports, and
   files that only mention the name without importing it
   (`test/import-resolver.test.js` — 7 tests;

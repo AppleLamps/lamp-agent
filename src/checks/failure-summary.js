@@ -1,3 +1,5 @@
+import { findSymbolDependencies } from "../code/code-index.js";
+
 // Build a compact, model-friendly summary of a parsed failure for the
 // repair loop. The full parsed record is rich but noisy — it carries
 // pointers to raw stdout/stderr files, timestamps, and IDs that are
@@ -16,10 +18,12 @@ const FILES_LIMIT = 20;
  * @param {object} parsed - The persisted check record or live parsed
  *   value. Either form (with or without raw_stdout_path /
  *   raw_stderr_path) is accepted.
+ * @param {object} options
+ * @param {object} options.codeIndex - Optional workspace code index.
  * @returns {object} A compact summary object. Field set is deliberate
  *   and stable so model prompts can rely on it.
  */
-export function summarizeFailureForRepair(parsed) {
+export function summarizeFailureForRepair(parsed, { codeIndex = null } = {}) {
   if (!parsed || typeof parsed !== "object") {
     return { status: "unknown", summary: "No parsed check available." };
   }
@@ -31,8 +35,9 @@ export function summarizeFailureForRepair(parsed) {
     ? parsed.likely_relevant_files_provenance
     : {};
   const likelyRelevant = Array.isArray(parsed.likely_relevant_files) ? parsed.likely_relevant_files : [];
+  const importGraph = buildImportGraph(failedFiles, codeIndex);
 
-  return {
+  const summary = {
     check_type: parsed.check_type || null,
     status: parsed.status || "unknown",
     exit_code: parsed.exit_code ?? null,
@@ -50,6 +55,10 @@ export function summarizeFailureForRepair(parsed) {
     })),
     command: parsed.command || null
   };
+  if (Object.keys(importGraph).length) {
+    summary.import_graph = importGraph;
+  }
+  return summary;
 }
 
 /**
@@ -63,6 +72,23 @@ export function summarizeFailureForRepairWithSnippet(parsed, { stdout = "", stde
     ...base,
     output_snippet: snippet(stdout, stderr)
   };
+}
+
+function buildImportGraph(failedFiles, codeIndex) {
+  if (!codeIndex || !Array.isArray(failedFiles)) return {};
+  const indexedFiles = new Set(codeIndex.files || []);
+  const graph = {};
+  for (const file of failedFiles.slice(0, FILES_LIMIT)) {
+    const normalized = String(file || "").replaceAll("\\", "/");
+    if (!normalized || !indexedFiles.has(normalized)) continue;
+    const deps = findSymbolDependencies({ codeIndex, file: normalized });
+    const internal = (deps.dependencies || [])
+      .map((entry) => entry.resolved)
+      .filter(Boolean);
+    const unique = [...new Set(internal)].slice(0, FILES_LIMIT);
+    if (unique.length) graph[normalized] = unique;
+  }
+  return graph;
 }
 
 function simplifyError(error) {
