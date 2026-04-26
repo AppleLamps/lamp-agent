@@ -70,13 +70,18 @@ export function buildPrePatchPlan({
   // Node project, which is too noisy.
   const requestSignals = scanUserRequestSignals(userRequest);
   const renameImpact = buildRenameImpact({ userRequest, codeIndex });
+  const signatureImpact = buildSignatureImpact({ userRequest, codeIndex });
   const renameAffectedFiles = renameImpact.flatMap((entry) =>
+    [...entry.defining_files, ...entry.caller_files]
+  );
+  const signatureAffectedFiles = signatureImpact.flatMap((entry) =>
     [...entry.defining_files, ...entry.caller_files]
   );
   const candidates = unique([
     ...keywordCandidates(userRequest, allFiles),
     ...notableCandidates(projectSummary),
     ...renameAffectedFiles,
+    ...signatureAffectedFiles,
     ...(requestSignals.secret ? dangerZones.secret_paths : []),
     ...(requestSignals.dependency
       ? [...dangerZones.dependency_manifests, ...dangerZones.lockfiles]
@@ -91,7 +96,8 @@ export function buildPrePatchPlan({
     candidates,
     projectMemory,
     taskType,
-    renameImpact
+    renameImpact,
+    signatureImpact
   }).slice(0, limits.warnings);
 
   return {
@@ -101,7 +107,8 @@ export function buildPrePatchPlan({
       candidate_files: candidates,
       risk_labels: [...riskyBoundaries],
       predicted_checks: predictedChecks,
-      rename_impact: renameImpact
+      rename_impact: renameImpact,
+      signature_impact: signatureImpact
     },
     danger_zones: dangerZones,
     warnings,
@@ -117,6 +124,18 @@ const RENAME_STOPWORDS = new Set([
   "fix", "name", "names", "called", "everywhere", "across", "through",
   "throughout", "module", "exports", "exported", "import", "imports",
   "imported", "type", "interface", "alias", "old", "new", "current"
+]);
+
+const SIGNATURE_STOPWORDS = new Set([
+  ...RENAME_STOPWORDS,
+  "add", "adds", "adding", "remove", "removes", "removing", "delete",
+  "deletes", "deleting", "change", "changes", "changing", "update",
+  "updates", "updating", "signature", "parameter", "parameters",
+  "param", "params", "argument", "arguments", "arg", "args", "return",
+  "returns", "returned", "returning", "type", "types", "take", "takes",
+  "accept", "accepts", "pass", "passes", "passing", "optional",
+  "required", "boolean", "string", "number", "object", "array", "void",
+  "promise", "async", "sync", "call", "calls", "caller", "callers"
 ]);
 
 function scanRenameIntent(userRequest) {
@@ -135,6 +154,37 @@ function scanRenameIntent(userRequest) {
 function buildRenameImpact({ userRequest, codeIndex }) {
   if (!codeIndex || !codeIndex.defsByName) return [];
   const candidates = scanRenameIntent(userRequest);
+  if (!candidates.length) return [];
+  const out = [];
+  for (const candidate of candidates) {
+    const impact = listSymbolImpact({ codeIndex, symbol: candidate });
+    if (!impact) continue;
+    out.push(impact);
+  }
+  return out;
+}
+
+function scanSignatureIntent(userRequest) {
+  const text = String(userRequest || "");
+  if (!/\b(signature|parameters?|params?|arguments?|args?|return\s+type|returns?|takes?|accepts?)\b/i.test(text)) {
+    return [];
+  }
+  if (!/\b(add|remove|delete|change|update|make|convert|switch|require|optional|return|take|accept)\b/i.test(text)) {
+    return [];
+  }
+  const matches = text.match(/\b[A-Za-z_$][\w$]*\b/g) || [];
+  const out = new Set();
+  for (const m of matches) {
+    if (m.length < 3) continue;
+    if (SIGNATURE_STOPWORDS.has(m.toLowerCase())) continue;
+    out.add(m);
+  }
+  return [...out];
+}
+
+function buildSignatureImpact({ userRequest, codeIndex }) {
+  if (!codeIndex || !codeIndex.defsByName) return [];
+  const candidates = scanSignatureIntent(userRequest);
   if (!candidates.length) return [];
   const out = [];
   for (const candidate of candidates) {
@@ -243,7 +293,7 @@ function inferTaskType(userRequest) {
   return "change";
 }
 
-function buildWarnings({ userRequest, riskyBoundaries, dangerZones, candidates, projectMemory, taskType, renameImpact = [] }) {
+function buildWarnings({ userRequest, riskyBoundaries, dangerZones, candidates, projectMemory, taskType, renameImpact = [], signatureImpact = [] }) {
   const warnings = [];
   const lower = String(userRequest || "").toLowerCase();
   const candidateSet = new Set((candidates || []).map(normalize));
@@ -327,6 +377,33 @@ function buildWarnings({ userRequest, riskyBoundaries, dangerZones, candidates, 
       symbol: impact.symbol,
       affected_files: [...impact.defining_files, ...impact.caller_files],
       message: `Renaming ${impact.symbol} will affect ${totalFiles} file(s): ${sample.join(", ")}${totalFiles > sample.length ? ", …" : ""}.`
+    });
+  }
+
+  // Signature-impact mirrors rename-impact, but it is triggered by
+  // parameter / argument / return-shape language. Cross-file callers
+  // are blocking because they are the places most likely to need
+  // coordinated call-site updates.
+  for (const impact of signatureImpact) {
+    const totalFiles = impact.defining_files.length + impact.caller_files.length;
+    const sample = [...impact.defining_files, ...impact.caller_files].slice(0, 5);
+    if (impact.caller_files.length === 0) {
+      warnings.push({
+        tier: "signature_impact",
+        severity: "info",
+        symbol: impact.symbol,
+        affected_files: [...impact.defining_files],
+        message: `Changing ${impact.symbol}'s signature affects 1 file (${impact.defining_files.join(", ")}); no cross-file callers.`
+      });
+      continue;
+    }
+    warnings.push({
+      tier: "signature_impact",
+      severity: "warning",
+      blocking: true,
+      symbol: impact.symbol,
+      affected_files: [...impact.defining_files, ...impact.caller_files],
+      message: `Changing ${impact.symbol}'s signature will affect ${totalFiles} file(s): ${sample.join(", ")}${totalFiles > sample.length ? ", …" : ""}.`
     });
   }
 

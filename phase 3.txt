@@ -13,22 +13,24 @@ the sub-bullets. The high-level checklist immediately below mirrors that.
 
 ## Resume Point For The Next Agent
 
-- **Latest completed slice:** `component_map()` for React component
-  discovery and JSX render edges.
-- **Test baseline:** `npm test` → 216 tests pass (0 skipped, 0
+- **Latest completed slice:** signature-change impact in the
+  pre-patch planner.
+- **Test baseline:** `npm test` → 220 tests pass (0 skipped, 0
   failing); `npm run test:e2e` → 15 e2e tests pass.
 - **Last two slices in order:**
-  1. `dependency_graph(path?)` — `src/code/code-index.js` builds a
-     workspace import graph with resolved internal edges and external
-     imports; the runtime/model tool returns the full graph or a
-     focused dependency subgraph plus direct dependents for a path.
-  2. `component_map()` — `src/code/code-index.js` detects common
+  1. `component_map()` — `src/code/code-index.js` detects common
      React function/class/arrow component declarations and links JSX
      tags to local/imported components; runtime/model tools and phase
      allowed-tools expose it.
+  2. Signature-change impact — `buildPrePatchPlan` scans for
+     parameter / argument / signature / return-shape requests, stores
+     `expected_scope.signature_impact`, adds affected definitions and
+     callers to candidate files, and emits `signature_impact`
+     warnings before patching.
 
-- **Recommended next slice:** the rest of item 8, starting with
-  signature-change impact, then tsconfig-paths and Python imports.
+- **Recommended next slice:** the remaining item 8 resolver gaps:
+  tsconfig-paths, CommonJS/re-export/dynamic-import coverage, and
+  Python imports.
 
 Current status:
 
@@ -94,10 +96,10 @@ Current status:
   card is no longer always-on. The phase controller requires
   `pre_patch_plan` as a plan-phase output. The runtime exposes
   `previewPatch(patch)` (surfaced as the `preview_patch` model tool).
-  A `/plan` CLI shortcut prints the persisted plan. Still TBD for
-  item 3: a "preview" review action that shows the next staged patch
-  before apply, and richer pre-patch impact analysis (rename /
-  signature changes that ripple through the import graph).
+  A `/plan` CLI shortcut prints the persisted plan. Rename and
+  signature impact now ripple through the import graph via item 8.
+  Still TBD for item 3: a "preview" review action that shows the next
+  staged patch before apply.
 - [~] Streaming wired into the CLI (item 4) — foundation in place.
   `requestOpenRouter` routes through a new `streamOpenRouterChat`
   helper when `modelConfig.capabilities.streaming` is true and the
@@ -163,9 +165,9 @@ Current status:
   recorded task and continues at the next incomplete phase using
   persisted task artifacts. Remaining limitation: it does not
   resurrect a deleted temp shadow workspace after a process restart.
-- [~] Dependency-aware edits and cross-file binding (item 8) — five
+- [~] Dependency-aware edits and cross-file binding (item 8) — six
   slices land (cross-file binding, rename impact, repair import graph,
-  dependency graph, component map).
+  dependency graph, component map, signature-change impact).
   `src/code/import-resolver.js` is the new shared resolver: relative-import sources resolve against the workspace
   file set with the standard `.ts/.tsx/.js/.jsx/.mjs/.cjs` extension
   list and an `index.<ext>` fallback; `src/checks/relevant-files.js`
@@ -195,15 +197,18 @@ Current status:
   edges, external imports, and focused path subgraphs with direct
   dependents. `component_map()` is wired through the same runtime/model
   and phase surfaces, returning best-effort React component
-  declarations and JSX render edges. Still open: signature-change
-  impact (renames covered; arg-list rewrites not yet), tsconfig-paths
-  alias resolution, and Python `from x import y` resolution.
+  declarations and JSX render edges. Signature-change impact is now
+  wired into `buildPrePatchPlan`: parameter / argument / return-shape
+  requests populate `expected_scope.signature_impact`, add definition
+  and caller files to candidate scope, and block before patch when the
+  symbol has cross-file callers. Still open: tsconfig-paths alias
+  resolution and Python `from x import y` resolution.
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
 - [ ] GitHub/CI integration (item 10) — not started.
 
 Where we are now:
 
-- Latest verified baseline: `npm test` passes with 216 tests
+- Latest verified baseline: `npm test` passes with 220 tests
   (0 skipped, 0 failing). `npm run test:e2e` runs 15 end-to-end
   tests, all passing.
 - The Phase 2 baseline (seven-phase lifecycle, structured task
@@ -275,11 +280,8 @@ exact `[x]` / `[~]` / `[ ]` state. Items 9–10 are not yet started.
 
 Recommended next steps in priority order:
 
-1. Remaining item 8 leftovers: signature-change impact
-   (parameter list / return type rewrites — distinct from
-   rename, requires the model's edit-spec or a pre-edit AST
-   diff), tsconfig-paths alias resolution (extend
-   `src/code/import-resolver.js`), Python
+1. Remaining item 8 leftovers: tsconfig-paths alias resolution
+   (extend `src/code/import-resolver.js`), Python
    `from x import y` resolution, and re-export / dynamic-import
    coverage tests.
 2. Item 6 leftover: wire `repair_findings` (schema is defined in
@@ -862,9 +864,9 @@ finished.
 ## 8. Dependency-Aware Edits And Cross-File Binding
 
 Status: in progress. Cross-file binding, foundational symbol tools,
-repair import-graph hints, `dependency_graph(path?)`, and
-`component_map()` have landed; signature-change impact,
-tsconfig-paths, and Python resolution are still open.
+repair import-graph hints, `dependency_graph(path?)`,
+`component_map()`, and signature-change impact have landed;
+tsconfig-paths and Python resolution are still open.
 
 ### Goal
 
@@ -934,9 +936,13 @@ breakage.
   - [x] `rename_impact` warning: `blocking: true` when the symbol
         has any cross-file caller, `severity: "info"` when only the
         definition is affected.
-  - [ ] Signature-change impact (parameter list / return type
-        rewrites) — distinct from rename, requires the model's
-        edit-spec or a pre-edit AST diff to detect.
+  - [x] Signature-change impact (parameter list / return type
+        rewrites) — `scanSignatureIntent` + `buildSignatureImpact`
+        detect parameter / argument / signature / return-shape
+        requests, extract candidate identifiers, run them through
+        `listSymbolImpact`, store `expected_scope.signature_impact`,
+        add affected files to candidate scope, and emit
+        `signature_impact` warnings.
 - [x] Repair-loop hint: pass the resolved import graph of the failing test
   into `model.repair` so the model edits the right source file on the first
   attempt. `summarizeFailureForRepair(parsed, { codeIndex })` calls
@@ -952,8 +958,10 @@ breakage.
   (`test/import-resolver.test.js` — 7 tests;
   `test/symbol-callers.test.js` — 9 tests). Component-map tests in
   `test/code-index.test.js` cover React component discovery, render
-  edges, and runtime exposure. Re-export and dynamic-import coverage
-  is open.
+  edges, and runtime exposure. Signature-impact tests in
+  `test/pre-patch-plan.test.js` cover blocking cross-file callers,
+  informational local-only impact, unmatched symbols, and non-
+  signature requests. Re-export and dynamic-import coverage is open.
 
 ### Notes for the next agent
 
@@ -983,6 +991,10 @@ breakage.
   anonymous default exports, HOC chains beyond simple `memo` /
   `forwardRef`, polymorphic lower-case components, or exact JSX
   control flow.
+- `signature_impact` is intent-based and symbol-level. It does not
+  parse actual before/after function signatures; it warns when the
+  request language makes a signature change likely and a mentioned
+  workspace symbol has known callers.
 
 ### Definition Of Done
 

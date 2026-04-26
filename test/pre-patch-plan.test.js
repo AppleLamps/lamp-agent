@@ -246,6 +246,118 @@ test("buildPrePatchPlan does NOT emit rename_impact when the request never menti
     "rename_impact only fires when the user request actually mentions 'rename'");
 });
 
+test("buildPrePatchPlan flags signature_impact as blocking when callers need coordinated updates", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts", "src/api/handler.ts", "src/ui/login-form.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map([
+      [
+        "src/api/handler.ts",
+        [{ source: "../auth/login", names: [{ kind: "named", name: "login" }], line: 1, kind: "static" }]
+      ],
+      [
+        "src/ui/login-form.ts",
+        [{ source: "../auth/login", names: [{ kind: "named", name: "login" }], line: 1, kind: "static" }]
+      ]
+    ]),
+    exports: new Map([
+      ["src/auth/login.ts", [{ name: "login", kind: "function", line: 1 }]]
+    ])
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Add a required tenantId parameter to login",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const signatureWarning = plan.warnings.find((entry) => entry.tier === "signature_impact");
+  assert.ok(signatureWarning, "expected a signature_impact warning");
+  assert.equal(signatureWarning.blocking, true);
+  assert.equal(signatureWarning.symbol, "login");
+  assert.deepEqual(signatureWarning.affected_files.sort(), [
+    "src/api/handler.ts",
+    "src/auth/login.ts",
+    "src/ui/login-form.ts"
+  ]);
+  assert.ok(plan.expected_scope.candidate_files.includes("src/api/handler.ts"));
+  assert.ok(plan.expected_scope.candidate_files.includes("src/ui/login-form.ts"));
+  assert.equal(plan.expected_scope.signature_impact.length, 1);
+  assert.equal(plan.expected_scope.signature_impact[0].symbol, "login");
+});
+
+test("buildPrePatchPlan emits signature_impact as informational when the symbol has no callers", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map(),
+    exports: new Map([
+      ["src/auth/login.ts", [{ name: "login", kind: "function", line: 1 }]]
+    ])
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Change login return type to AuthResult",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const signatureWarning = plan.warnings.find((entry) => entry.tier === "signature_impact");
+  assert.ok(signatureWarning, "expected an informational signature_impact entry");
+  assert.notEqual(signatureWarning.blocking, true);
+  assert.equal(signatureWarning.severity, "info");
+});
+
+test("buildPrePatchPlan does NOT emit signature_impact when no mentioned symbol matches", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map(),
+    exports: new Map()
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Add a parameter to the checkout flow",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const signatureWarning = plan.warnings.find((entry) => entry.tier === "signature_impact");
+  assert.equal(signatureWarning, undefined,
+    "should not flag signature_impact when no mentioned identifier resolves to a workspace symbol");
+  assert.deepEqual(plan.expected_scope.signature_impact, []);
+});
+
+test("buildPrePatchPlan does NOT emit signature_impact without signature-change language", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts", "src/api/handler.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map([
+      [
+        "src/api/handler.ts",
+        [{ source: "../auth/login", names: [{ kind: "named", name: "login" }], line: 1, kind: "static" }]
+      ]
+    ]),
+    exports: new Map([
+      ["src/auth/login.ts", [{ name: "login", kind: "function", line: 1 }]]
+    ])
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Fix the failing login redirect",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const signatureWarning = plan.warnings.find((entry) => entry.tier === "signature_impact");
+  assert.equal(signatureWarning, undefined,
+    "signature_impact only fires for parameter, argument, signature, or return-shape requests");
+});
+
 test("buildPrePatchPlan flags a secret_file blocker when candidates cross a secret path", () => {
   // Use a request whose keyword tokens include the file we want to flag.
   const plan = buildPrePatchPlan({
