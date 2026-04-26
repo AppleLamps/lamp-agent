@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import readline from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config/config.js";
 import { createTask, updateTaskStatus } from "./task/task-manager.js";
@@ -46,6 +46,27 @@ async function main() {
   let activeTask = null;
   let activeTools = tools;
 
+  // Graceful Ctrl-C: capture partial state, mark the active phase as
+  // interrupted, and let the user see exactly where the task stopped.
+  // After the first SIGINT we close the readline so a second Ctrl-C
+  // exits the process immediately.
+  let sigintHandlerActive = true;
+  process.on("SIGINT", async () => {
+    if (!sigintHandlerActive) return;
+    sigintHandlerActive = false;
+    try {
+      if (activeTask) {
+        await cancelTask(activeTask, ui, {
+          reason: "Process received SIGINT.",
+          interrupted: true
+        });
+      }
+    } finally {
+      try { rl.close(); } catch { /* ignore */ }
+      process.exit(130);
+    }
+  });
+
   while (true) {
     let answer;
     try {
@@ -81,6 +102,15 @@ async function main() {
       await printPrePatchPlan(activeTask, ui);
       continue;
     }
+    if (line === "/tasks" || line.toLowerCase() === "list tasks") {
+      await printTasksList(cwd, ui);
+      continue;
+    }
+    if (line.toLowerCase().startsWith("/show ") || line.toLowerCase().startsWith("show task ")) {
+      const taskId = line.replace(/^\/show\s+|^show\s+task\s+/i, "").trim();
+      await printTaskShow(cwd, taskId, ui);
+      continue;
+    }
     if (line === "/undo") {
       await handleUndo(activeTask, activeTools, ui);
       continue;
@@ -109,6 +139,7 @@ async function main() {
     output.write(`${ui.user(line)}\n`);
     activeTask = await createTask(cwd, line);
     const phaseController = await initializePhaseController(activeTask);
+    activeTask.phaseController = phaseController;
     activeTools = tools;
     await appendEvent(activeTask.dir, {
       type: "task_created",
@@ -375,6 +406,8 @@ Commands:
   /details Show task artifacts and technical details
   /files   Show changed files for the active task
   /plan    Show the pre-patch plan recorded for the active task
+  /tasks   List recent tasks (status, last phase, resumable flag)
+  /show    Show details for one task by id (e.g. /show task-20260425-200000)
   /undo    Undo files changed by the last task, when snapshots exist
   /exit    Quit
 
@@ -555,6 +588,107 @@ async function handleUndo(activeTask, tools, ui) {
   output.write(`${result.ok ? ui.success(result.message) : ui.warning(result.message)}\n`);
 }
 
+async function printTasksList(cwd, ui) {
+  const tasksDir = path.join(cwd, ".agent", "tasks");
+  let entries;
+  try {
+    entries = await readdir(tasksDir);
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      output.write(`${ui.warning("No tasks recorded yet (.agent/tasks does not exist).")}\n`);
+      return;
+    }
+    throw error;
+  }
+  if (!entries.length) {
+    output.write(`${ui.warning("No tasks recorded yet.")}\n`);
+    return;
+  }
+  const recent = entries.sort().slice(-15).reverse();
+  const rows = [];
+  for (const id of recent) {
+    const taskPath = path.join(tasksDir, id, "task.json");
+    const phasesPath = path.join(tasksDir, id, "phases.json");
+    const task = await readJson(taskPath, null);
+    const phases = await readJson(phasesPath, {});
+    const lastPhase = describeLastPhase(phases);
+    const resumable = isResumable(phases);
+    const taskType = task?.task_type || "?";
+    const summary = (task?.user_request || "").slice(0, 60);
+    rows.push(`${id}  [${task?.status || "unknown"}]  type=${taskType}  phase=${lastPhase}${resumable ? "  resumable" : ""}\n  ${summary}`);
+  }
+  output.write(`${ui.card("recent tasks", rows.join("\n\n"))}\n`);
+}
+
+async function printTaskShow(cwd, taskId, ui) {
+  if (!taskId) {
+    output.write(`${ui.warning("Pass a task id, e.g. /show task-20260425-200000")}\n`);
+    return;
+  }
+  const taskDir = path.join(cwd, ".agent", "tasks", taskId);
+  const task = await readJson(path.join(taskDir, "task.json"), null);
+  if (!task) {
+    output.write(`${ui.warning(`Task ${taskId} not found under .agent/tasks.`)}\n`);
+    return;
+  }
+  const phases = await readJson(path.join(taskDir, "phases.json"), {});
+  const changed = await readJson(path.join(taskDir, "changed-files.json"), []);
+  const verification = await readJson(path.join(taskDir, "verification.json"), null);
+  const prePatch = await readJson(path.join(taskDir, "pre-patch-plan.json"), null);
+
+  const phaseLines = ["intake", "triage", "plan", "patch", "verify", "critique", "final_review"]
+    .map((name) => `- ${name}: ${phases[name]?.state || "not started"}`);
+  const lines = [
+    `task: ${task.id}`,
+    `status: ${task.status}`,
+    `type: ${task.task_type}`,
+    `risk: ${task.risk_level || "normal"}`,
+    `request: ${task.user_request}`,
+    "",
+    "Phases:",
+    ...phaseLines,
+    "",
+    `changed files: ${changed.length}`,
+    `verification: ${verification?.status || "not recorded"}`,
+    `resumable: ${isResumable(phases) ? "yes" : "no"}`
+  ];
+  if (prePatch?.warnings?.length) {
+    lines.push("", "Pre-patch warnings:");
+    for (const warning of prePatch.warnings) {
+      lines.push(`- [${warning.severity}] ${warning.tier}: ${warning.message}`);
+    }
+  }
+  output.write(`${ui.card(`task ${taskId}`, lines.join("\n"))}\n`);
+}
+
+const PHASE_ORDER = ["intake", "triage", "plan", "patch", "verify", "critique", "final_review"];
+
+function describeLastPhase(phases) {
+  if (!phases || typeof phases !== "object") return "(no phase state)";
+  let last = null;
+  for (const name of PHASE_ORDER) {
+    if (phases[name]) last = `${name}:${phases[name].state}`;
+  }
+  return last || "(no phase state)";
+}
+
+function isResumable(phases) {
+  if (!phases || typeof phases !== "object") return false;
+  // A task is resumable when at least one phase is recorded and the
+  // pipeline did not finish cleanly — i.e. final_review is not yet
+  // completed and the last touched phase is not in a terminal failure.
+  if (phases.final_review?.state === "completed") return false;
+  for (const name of PHASE_ORDER) {
+    const entry = phases[name];
+    if (!entry) continue;
+    if (entry.state === "interrupted" || entry.state === "cancelled" || entry.state === "in_progress") {
+      return true;
+    }
+  }
+  // All recorded phases completed but final_review is missing.
+  return Object.values(phases).some((entry) => entry?.state === "completed");
+}
+
 async function printPrePatchPlan(activeTask, ui) {
   if (!activeTask) {
     output.write(`${ui.warning("There is no active task yet.")}\n`);
@@ -658,7 +792,7 @@ async function printTechnicalDetails(activeTask, ui) {
   output.write(`${ui.card("technical details", lines.join("\n"))}\n`);
 }
 
-async function cancelTask(activeTask, ui) {
+async function cancelTask(activeTask, ui, { reason = "Task cancelled by user action.", interrupted = false } = {}) {
   if (!activeTask) {
     output.write(`${ui.warning("There is no active task to cancel.")}\n`);
     return;
@@ -669,12 +803,20 @@ async function cancelTask(activeTask, ui) {
   if (activeTask.abortController && !activeTask.abortController.signal.aborted) {
     try { activeTask.abortController.abort(); } catch { /* ignore */ }
   }
-  await updateTaskStatus(activeTask, "cancelled");
+  // Mark whichever phase is currently in_progress so /tasks and the
+  // future /resume can tell where the run stopped.
+  if (activeTask.phaseController) {
+    try {
+      if (interrupted) await activeTask.phaseController.markInterrupted(reason);
+      else await activeTask.phaseController.markCancelled(reason);
+    } catch { /* phase state may be missing; ignore */ }
+  }
+  await updateTaskStatus(activeTask, interrupted ? "interrupted" : "cancelled");
   await appendEvent(activeTask.dir, {
-    type: "task_cancelled",
-    message: "Task cancelled by user action"
+    type: interrupted ? "task_interrupted" : "task_cancelled",
+    message: reason
   });
-  output.write(`${ui.warning("Task cancelled. No push or deploy was performed.")}\n`);
+  output.write(`${ui.warning(`${interrupted ? "Task interrupted" : "Task cancelled"}. No push or deploy was performed.`)}\n`);
 }
 
 function createApprovalPrompt(rl, approvals, ui, prompts) {

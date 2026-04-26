@@ -122,6 +122,58 @@ export function createPhaseController(activeTask) {
       throw error;
     },
 
+    /**
+     * Mark whichever phase is currently `in_progress` as `cancelled`
+     * (no error is thrown). Callers use this when the user explicitly
+     * cancels the task. Returns the cancelled phase name or null when
+     * no phase was in progress.
+     */
+    async markCancelled(reason = "User cancelled the task.") {
+      const phases = await readPhaseState(activeTask);
+      const inProgress = Object.entries(phases).find(([, entry]) => entry?.state === "in_progress");
+      if (!inProgress) return null;
+      const [name, entry] = inProgress;
+      phases[name] = {
+        ...entry,
+        state: "cancelled",
+        cancelled_at: new Date().toISOString(),
+        message: reason
+      };
+      await writePhaseState(activeTask, phases);
+      await appendEvent(activeTask.dir, {
+        type: "phase_cancelled",
+        phase: name,
+        message: reason
+      });
+      return name;
+    },
+
+    /**
+     * Like `markCancelled` but reserved for non-graceful exits
+     * (Ctrl-C, hangups). The active phase becomes `interrupted` so
+     * a future `/resume` can tell the difference between a user
+     * cancellation and an external interruption.
+     */
+    async markInterrupted(reason = "Process interrupted before the phase could complete.") {
+      const phases = await readPhaseState(activeTask);
+      const inProgress = Object.entries(phases).find(([, entry]) => entry?.state === "in_progress");
+      if (!inProgress) return null;
+      const [name, entry] = inProgress;
+      phases[name] = {
+        ...entry,
+        state: "interrupted",
+        interrupted_at: new Date().toISOString(),
+        message: reason
+      };
+      await writePhaseState(activeTask, phases);
+      await appendEvent(activeTask.dir, {
+        type: "phase_interrupted",
+        phase: name,
+        message: reason
+      });
+      return name;
+    },
+
     async read() {
       return readPhaseState(activeTask);
     }

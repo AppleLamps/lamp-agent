@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { createPermissionEngine } from "../permissions/permission-engine.js";
 import { applyFilePatch, parseUnifiedPatch } from "../patch/patch-engine.js";
+import { noteAlternativeApproach } from "../task/beliefs.js";
 import { summarizeSnapshotDiff } from "../workspace/checkpoint.js";
 import { parseCheckOutput } from "../checks/check-parser.js";
 import { parseStructuredOutput } from "../checks/structured-reporter.js";
@@ -77,7 +78,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
     async writeFileTracked(activeTask, relativePath, content) {
       const allowed = permissions.classifyPath(relativePath, "write");
-      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id });
+      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id, activeTask });
       if (!permission.approved) return denied(permission);
       await snapshotFile(activeTask, cwd, relativePath);
       const absolute = path.resolve(cwd, relativePath);
@@ -90,7 +91,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
     async createFileTracked(activeTask, relativePath, content) {
       const allowed = permissions.classifyPath(relativePath, "write");
-      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id });
+      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id, activeTask });
       if (!permission.approved) return denied(permission);
       const absolute = path.resolve(cwd, relativePath);
       if (await exists(absolute)) {
@@ -107,12 +108,12 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
     async deleteFileTracked(activeTask, relativePath) {
       const allowed = permissions.classifyPath(relativePath, "write");
-      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id });
+      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id, activeTask });
       if (!permission.approved) return denied(permission);
       const askDelete = await resolvePermission(
         decisionAsk("delete_file", "Deleting a workspace file is irreversible without snapshot restore."),
         requestApproval,
-        { path: relativePath, taskId: activeTask?.id, operation: "delete_file" }
+        { path: relativePath, taskId: activeTask?.id, operation: "delete_file", activeTask }
       );
       if (!askDelete.approved) return denied(askDelete);
       const absolute = path.resolve(cwd, relativePath);
@@ -158,7 +159,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
     async replaceRangeTracked(activeTask, relativePath, startLine, endLine, content) {
       const allowed = permissions.classifyPath(relativePath, "write");
-      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id });
+      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id, activeTask });
       if (!permission.approved) return denied(permission);
       const absolute = path.resolve(cwd, relativePath);
       if (!(await exists(absolute))) {
@@ -198,7 +199,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
     async replaceExactTracked(activeTask, relativePath, oldText, newText) {
       const allowed = permissions.classifyPath(relativePath, "write");
-      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id });
+      const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id, activeTask });
       if (!permission.approved) return denied(permission);
       const absolute = path.resolve(cwd, relativePath);
       if (!(await exists(absolute))) {
@@ -318,7 +319,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
       for (const filePatch of filePatches) {
         const relativePath = filePatch.path;
         const allowed = permissions.classifyPath(relativePath, "write");
-        const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id });
+        const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id, activeTask });
         if (!permission.approved) return denied(permission);
 
         try {
@@ -341,7 +342,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
     async runCommand(command, purpose = "Run command", activeTask = null) {
       const decision = permissions.classifyCommand(command);
-      const permission = await resolvePermission(decision, requestApproval, { command, purpose, taskId: activeTask?.id });
+      const permission = await resolvePermission(decision, requestApproval, { command, purpose, taskId: activeTask?.id, activeTask });
       if (!permission.approved) {
         const result = denied(permission);
         await logCommand(activeTask, { command, purpose, status: "skipped", decision, result });
@@ -750,6 +751,21 @@ async function resolvePermission(decision, requestApproval, details) {
   if (decision.action === "allow") return { approved: true, decision };
   if (decision.action === "blocked") return { approved: false, blocked: true, decision, message: decision.reason };
   const approval = await requestApproval(decision, details);
+  // Record an "alternative approach requested" belief so the model
+  // sees the constraint on its next iteration and picks a different
+  // strategy. The caller already passes `taskId` in details; we
+  // resolve back to the activeTask via the optional `activeTask` field
+  // when present.
+  if (approval?.alternative && details?.activeTask) {
+    try {
+      await noteAlternativeApproach(details.activeTask, {
+        tier: decision.tier,
+        command: details.command,
+        path: details.path,
+        reason: decision.reason
+      });
+    } catch { /* best-effort */ }
+  }
   return { approved: Boolean(approval.approved), decision, approval };
 }
 
@@ -861,7 +877,7 @@ async function logEditEvent(activeTask, tool, payload) {
 
 async function insertAtMarker({ permissions, requestApproval, cwd, activeTask, relativePath, marker, content, position }) {
   const allowed = permissions.classifyPath(relativePath, "write");
-  const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id });
+  const permission = await resolvePermission(allowed, requestApproval, { path: relativePath, taskId: activeTask?.id, activeTask });
   if (!permission.approved) return denied(permission);
   const absolute = path.resolve(cwd, relativePath);
   if (!(await exists(absolute))) {

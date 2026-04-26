@@ -55,16 +55,18 @@ The CLI renders a styled chat shell with:
 ## Current Handoff Status
 
 Core MVP and Phase 2 are implemented and tested. Phase 3 items 1
-through 6 are in progress. Items 1–5 (e2e coverage, parsers,
-pre-patch plan, streaming, multi-provider adapters) are described
-below; item 6 (structured outputs beyond critique) lands plan and
-edit-spec this round, with `plan.json` and `edit-spec.json`
-persisted alongside the existing critique artifact when the model
-supports JSON output. Latest verified baseline: `npm test` passes
-with 184 tests; `npm run test:e2e` runs 13 end-to-end tests that
-drive the CLI binary against four fixture repositories. Latest
-pushed commit at this handoff: `a321bb0 Add OpenAI, local, and
-Anthropic adapters (Phase 3 item 5)` on `main`.
+through 7 are in progress. Items 1–6 are described below; item 7
+(resumable tasks and cancel-in-flight) lands phase-aware
+cancellation, a SIGINT handler that captures partial state, the
+`/tasks` and `/show` CLI commands, and an alternate-approach
+belief that tells the model when the user denied an operation
+with "another approach". Full `/resume <task-id>` is the last
+remaining piece for item 7. Latest verified baseline: `npm test`
+passes with 190 tests; `npm run test:e2e` runs 14 end-to-end
+tests that drive the CLI binary against four fixture
+repositories. Latest pushed commit at this handoff: `858bd92
+Land structured plan + edit-spec outputs (Phase 3 item 6)` on
+`main`.
 
 Most recent completed work:
 
@@ -234,6 +236,23 @@ Most recent completed work:
     are unchanged).
   - The CLI invokes both during the plan and patch phases when
     `model.allowNetwork` is enabled.
+- Phase 3 item 7 progress (resumable tasks and cancel-in-flight):
+  - `phaseController.markCancelled(reason)` /
+    `markInterrupted(reason)` flip the in-progress phase to
+    `cancelled` / `interrupted` and emit a `phase_cancelled` /
+    `phase_interrupted` event.
+  - `cancelTask` in `src/index.js` calls those before flipping
+    the task status, so /tasks (and the future /resume) can tell
+    where the run stopped.
+  - A SIGINT handler captures partial state on Ctrl-C and exits
+    with code 130; the active phase becomes `interrupted`
+    (distinct from `cancelled`).
+  - New `/tasks` and `/show <task-id>` CLI commands print a
+    per-task summary including status, last phase, and a
+    resumable flag.
+  - Approval denials with "another approach" now record a
+    `constraint`-typed belief in `beliefs.json` so the model
+    sees the constraint on its next loop.
 - Two bug fixes surfaced by the new e2e coverage:
   - the permission engine's destructive-command regex used a trailing
     `\b` that failed at end-of-string and let `rm -rf /` and
@@ -257,21 +276,24 @@ Where we left off:
 
 Next recommended work:
 
-1. Item 7 (resumable tasks and cancel-in-flight). `cancel task` is
-   already wired (item 4); the next pieces are `/resume <task-id>`,
-   graceful Ctrl-C handling that captures partial state, the
-   alternate-approach re-entry from approval prompts, and a
-   `/tasks` listing.
-2. Item 6 leftovers: wire `repair_findings` so each repair attempt
-   produces a structured diagnosis the review surface can render.
-3. Item 5 leftovers: Anthropic prompt caching, Anthropic streaming
+1. Item 7 leftover: implement `/resume <task-id>`. Extract the
+   main-loop task body in `src/index.js` into a
+   `runTaskLifecycle({...})` function so a partially-completed
+   task can pick up at the next not-completed phase.
+2. Item 8 (dependency-aware edits and cross-file binding). Extend
+   `src/code/code-index.js` to resolve imports across files, then
+   surface a `symbol_callers(name)` tool the model can use before
+   renaming a symbol.
+3. Item 6 leftovers: wire `repair_findings` (schema is defined)
+   into `verifyAndRepair` and the review surface.
+4. Item 5 leftovers: Anthropic prompt caching, Anthropic streaming
    inside `respond`/`repair`, and a live-network smoke test gated
    on per-provider env vars.
-4. Item 4 leftovers: a streaming-aware `ui.assistant` variant and
-   streaming the repair loop's model calls.
-5. Item 3 leftovers: a "preview" review action and richer
+5. Item 4 leftovers: streaming-aware `ui.assistant`, streaming the
+   repair loop.
+6. Item 3 leftovers: a "preview" review action and richer
    pre-patch impact analysis.
-6. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring).
+7. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring).
 
 Phase 3 roadmap items (see `phase 3.txt` for full detail):
 

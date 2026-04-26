@@ -667,6 +667,40 @@ test(
   }
 );
 
+test("e2e: /tasks lists recent tasks and /show prints details", async () => {
+  const fixture = await copyFixture("non-git-plain");
+  const cli = spawnCli({ cwd: fixture.cwd });
+  try {
+    await cli.expect(/Lamp Agent/);
+    // Run a small task so something appears in /tasks.
+    await cli.sendLine("Explain what is in this directory.");
+    await cli.expect(/Next actions:/, { timeout: 60000 });
+
+    await cli.sendLine("/tasks");
+    await cli.expect(/recent tasks/);
+    // The card should mention the task's status and phase summary.
+    await cli.expect(/task-\d{8}-\d{6}/);
+    await cli.expect(/status=ready_to_review|\[ready_to_review\]/i);
+
+    // Pull the task id out of the listing for the /show probe.
+    const taskIdMatch = cli.stdout().match(/(task-\d{8}-\d{6})/);
+    assert.ok(taskIdMatch, "expected /tasks output to include a task id");
+    const taskId = taskIdMatch[1];
+
+    await cli.sendLine(`/show ${taskId}`);
+    await cli.expect(new RegExp(`task ${taskId.replace(/-/g, "\\-")}`));
+    await cli.expect(/Phases:/);
+    await cli.expect(/final_review: completed/);
+
+    await cli.sendLine("/exit");
+    const result = await cli.exit();
+    assert.equal(result.code, 0);
+  } finally {
+    cli.kill();
+    await fixture.cleanup();
+  }
+});
+
 test("e2e: CLI runs against a non-git plain directory", async () => {
   const fixture = await copyFixture("non-git-plain");
   const cli = spawnCli({ cwd: fixture.cwd });

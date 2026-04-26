@@ -98,6 +98,28 @@ export async function updateBeliefsFromCritique(activeTask, critique) {
   });
 }
 
+/**
+ * Record a structured belief that the user denied a permission with
+ * "another approach" so the model sees the constraint on its next
+ * iteration rather than guessing why a tool came back denied.
+ */
+export async function noteAlternativeApproach(activeTask, { tier, command, path: targetPath, reason } = {}) {
+  if (!activeTask?.dir) return;
+  const subject = command
+    ? `running command \`${command}\``
+    : targetPath
+      ? `accessing \`${targetPath}\``
+      : `the ${tier || "operation"} boundary`;
+  const text = `User asked for an alternative approach to ${subject}; pick a different strategy that does not cross this boundary.`;
+  await addClaim(activeTask, {
+    text,
+    type: "constraint",
+    confidence: 1,
+    status: "confirmed",
+    evidence: [reason || "approval prompt — user chose 'another approach'"]
+  });
+}
+
 export async function summarizeBeliefs(activeTask) {
   const beliefs = await readBeliefs(activeTask);
   return {

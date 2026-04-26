@@ -122,7 +122,20 @@ Current status:
   the plan and patch phases. Still TBD: a structured
   repair-findings flow (the schema is defined; the wiring is not),
   and live-network smoke tests.
-- [ ] Resumable tasks and cancel-in-flight (item 7) — not started.
+- [~] Resumable tasks and cancel-in-flight (item 7) — most pieces
+  except `/resume` itself land this round. Phase controller gained
+  `markCancelled` and `markInterrupted` helpers; `cancelTask`
+  flips the in-progress phase to `cancelled` (or `interrupted` for
+  Ctrl-C) before flipping the task status. A SIGINT handler in
+  `src/index.js` captures partial state on Ctrl-C and exits with
+  code 130. New CLI commands `/tasks` (lists recent tasks with
+  status, last phase, resumable flag) and `/show <task-id>` (full
+  task summary). Approval denials with "another approach" now
+  append a `constraint`-typed belief so the model sees the
+  boundary on its next iteration. Still TBD: a full `/resume
+  <task-id>` (requires extracting the task lifecycle into a
+  function so a partially-completed task can pick up at the next
+  not-completed phase).
 - [ ] Dependency-aware edits and cross-file binding (item 8) — not started.
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
 - [ ] GitHub/CI integration (item 10) — not started.
@@ -703,7 +716,10 @@ without ad-hoc string parsing.
 
 ## 7. Resumable Tasks And Cancel-In-Flight
 
-Status: not started. Phase controller persists state but cannot resume mid-flow.
+Status: in progress. Cancellation, Ctrl-C, listing, and the
+alternate-approach belief land this round. Full `/resume <task-id>`
+is still pending — it needs the lifecycle refactor that lets a
+partially-completed task pick up at the next non-completed phase.
 
 ### Goal
 
@@ -712,25 +728,47 @@ mid-flight without leaving the harness in an inconsistent state.
 
 ### Add
 
-- [ ] Resume: a `/resume <task-id>` command that loads `phases.json`, decides
-  the next phase, and continues. The phase controller already enforces
-  ordering; this work is mostly the CLI glue and the rule for "what counts as
-  resumable" (e.g. patch + verify can resume, critique cannot rerun without
-  user direction).
-- [ ] Cancel-in-flight: a real `cancel task` that aborts the active model
-  request via `AbortController`, marks the in-progress phase as `cancelled`,
-  and writes a cancellation event. Today `cancel task` only flips status; the
-  current model call keeps running.
-- [ ] Alternate-approach flow: when an approval is denied with "another
-  approach", surface the denial back to the model in a structured way and
-  re-enter the patch phase with the new constraint recorded in beliefs.
-- [ ] Graceful exit: pressing Ctrl-C during a task captures partial state,
-  marks the active phase `interrupted`, and offers `/resume` on next start.
-- [ ] `/tasks` command listing recent tasks with status, last phase, and
-  whether they can be resumed.
-- [ ] Tests covering: resume after Ctrl-C in patch, cancel during streamed
-  respond, alternate-approach re-entry, and re-resume of an already-completed
-  task being a no-op.
+- [ ] Resume: a `/resume <task-id>` command that loads `phases.json`,
+  decides the next phase, and continues. Deferred: requires
+  extracting the lifecycle in `src/index.js` into a function so the
+  resume path can begin from any not-completed phase using the
+  artifacts already on disk.
+- [x] Cancel-in-flight: `cancel task` aborts the active model
+  request via `AbortController` (item 4), and now also marks the
+  active phase `cancelled` and writes a `phase_cancelled` event.
+  `phaseController.markCancelled(reason)` returns the cancelled
+  phase name or null when nothing is in progress.
+- [x] Alternate-approach flow: when an approval is denied with
+  "another approach", `resolvePermission` records a
+  `constraint`-typed belief in `beliefs.json` so the model sees
+  the constraint on its next iteration. The denied tool result
+  already includes `alternative_requested: true` so the model
+  notices the change in the same loop.
+- [x] Graceful exit: a `SIGINT` handler in `src/index.js` calls
+  `cancelTask({ interrupted: true })` and exits with code 130.
+  The active phase becomes `interrupted` (distinct from
+  `cancelled`) so a future `/resume` can tell user-driven
+  cancellations apart from external interruptions.
+- [x] `/tasks` command listing recent tasks with status, last
+  phase, and a resumable flag. Also `/show <task-id>` for a full
+  per-task card.
+- [x] Tests: phase controller `markCancelled` / `markInterrupted`
+  cases, alternate-approach belief is recorded for both
+  command-tier and path-tier denials, and a `/tasks` + `/show`
+  end-to-end flow.
+
+### Notes for the next agent
+
+- `/resume <task-id>` is the remaining big piece. Recommended
+  approach: extract the body of the main loop in
+  `src/index.js` (from `Understanding the project` through the
+  review-action handler) into a `runTaskLifecycle({...})`
+  function. The function reads `phases.json` to know which phase
+  to begin with; new tasks start at `triage`, resumed tasks
+  jump to the next not-completed phase. For phases whose inputs
+  aren't already on disk (e.g. patch's `response` object), the
+  simplest thing is to re-run from the latest artifact-backed
+  phase rather than try to reconstruct intermediate state.
 
 ### Definition Of Done
 

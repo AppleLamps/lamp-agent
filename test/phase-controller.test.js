@@ -132,6 +132,59 @@ test("phase controller records the full happy-path lifecycle", async () => {
   }
 });
 
+test("phase controller markCancelled flips the in-progress phase to cancelled", async () => {
+  const cwd = await makeDir();
+  try {
+    await writeFile(path.join(cwd, "package.json"), JSON.stringify({ scripts: {} }));
+    const activeTask = await createTask(cwd, "Cancel mid-flight");
+    const controller = await initializePhaseController(activeTask);
+    await controller.begin("triage");
+    await controller.complete("triage", { project_summary: { fileCount: 1, notableFiles: ["package.json"] } });
+    await controller.begin("plan");
+
+    const cancelled = await controller.markCancelled("user pulled the plug");
+    assert.equal(cancelled, "plan");
+    const phases = JSON.parse(await readFile(path.join(activeTask.dir, "phases.json"), "utf8"));
+    assert.equal(phases.plan.state, "cancelled");
+    assert.equal(phases.plan.message, "user pulled the plug");
+
+    const events = (await readFile(path.join(activeTask.dir, "events.jsonl"), "utf8"))
+      .trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    assert.ok(events.some((event) => event.type === "phase_cancelled" && event.phase === "plan"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("phase controller markInterrupted captures partial state without erroring", async () => {
+  const cwd = await makeDir();
+  try {
+    await writeFile(path.join(cwd, "package.json"), JSON.stringify({ scripts: {} }));
+    const activeTask = await createTask(cwd, "Interrupt me");
+    const controller = await initializePhaseController(activeTask);
+    await controller.begin("triage");
+    const interrupted = await controller.markInterrupted("Process received SIGINT.");
+    assert.equal(interrupted, "triage");
+    const phases = JSON.parse(await readFile(path.join(activeTask.dir, "phases.json"), "utf8"));
+    assert.equal(phases.triage.state, "interrupted");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("phase controller markCancelled returns null when nothing is in progress", async () => {
+  const cwd = await makeDir();
+  try {
+    await writeFile(path.join(cwd, "package.json"), JSON.stringify({ scripts: {} }));
+    const activeTask = await createTask(cwd, "No active phase");
+    const controller = await initializePhaseController(activeTask);
+    const cancelled = await controller.markCancelled();
+    assert.equal(cancelled, null);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("buildTaskPlan and identifyRiskyBoundaries create patch gates", () => {
   const projectSummary = {
     scripts: ["test"],
