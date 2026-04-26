@@ -60,6 +60,8 @@ export async function requestStructuredEditSpec({
         warnings: prePatchPlan.warnings
       } : null
     },
+    schema: EDIT_SPEC_SCHEMA,
+    schemaName: "lamp_edit_spec",
     activeTask,
     purpose: "structured_edit_spec"
   });

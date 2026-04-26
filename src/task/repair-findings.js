@@ -76,6 +76,8 @@ export async function requestRepairFindings({
         noop: entry.repair?.noop
       }))
     },
+    schema: REPAIR_FINDINGS_SCHEMA,
+    schemaName: "lamp_repair_findings",
     activeTask,
     purpose: "repair_findings"
   });

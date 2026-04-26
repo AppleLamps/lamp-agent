@@ -29,29 +29,24 @@ test("OpenRouter adapter exposes the model adapter contract and capabilities", (
   });
 });
 
-test("OpenRouter adapter retries transient failures, uses fallback model, and records usage", async () => {
+test("OpenRouter adapter sends fallback list in body.models for native fallback", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-model-"));
   const activeTask = { id: "task-model", dir: path.join(cwd, ".agent", "tasks", "task-model") };
   const originalFetch = globalThis.fetch;
   const originalKey = process.env.OPENROUTER_API_KEY;
-  const requestedModels = [];
+  let requestBody = null;
 
   try {
     process.env.OPENROUTER_API_KEY = "test-key";
     globalThis.fetch = async (_url, init) => {
-      const body = JSON.parse(init.body);
-      requestedModels.push(body.model);
-      if (body.model === "primary/model") {
-        return {
-          ok: false,
-          status: 500,
-          json: async () => ({})
-        };
-      }
+      requestBody = JSON.parse(init.body);
+      // OpenRouter served the fallback model server-side: respond with
+      // its `model` field set to the fallback to simulate that.
       return {
         ok: true,
         status: 200,
         json: async () => ({
+          model: "fallback/model",
           choices: [{ message: { content: "Fallback answered." } }],
           usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, cost: 0.001 }
         })
@@ -84,18 +79,22 @@ test("OpenRouter adapter retries transient failures, uses fallback model, and re
     });
 
     assert.equal(response.message, "Fallback answered.");
-    assert.deepEqual(requestedModels, ["primary/model", "fallback/model"]);
+    // The request body carries the fallback list so OpenRouter can
+    // fail over server-side. Primary stays as `body.model`.
+    assert.equal(requestBody.model, "primary/model");
+    assert.deepEqual(requestBody.models, ["primary/model", "fallback/model"]);
 
     const usageLines = (await readFile(path.join(activeTask.dir, "model-usage.jsonl"), "utf8"))
       .trim()
       .split(/\r?\n/)
       .map((line) => JSON.parse(line));
-    assert.equal(usageLines.length, 2);
-    assert.equal(usageLines[0].status, "failed");
-    assert.equal(usageLines[0].transient, true);
-    assert.equal(usageLines[1].status, "ok");
-    assert.equal(usageLines[1].fallback, true);
-    assert.equal(usageLines[1].usage.total_tokens, 15);
+    assert.equal(usageLines.length, 1);
+    assert.equal(usageLines[0].status, "ok");
+    // Usage record reflects the model that actually served the call.
+    assert.equal(usageLines[0].model, "fallback/model");
+    assert.equal(usageLines[0].fallback, true);
+    assert.equal(usageLines[0].native_fallback, true);
+    assert.equal(usageLines[0].usage.total_tokens, 15);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;

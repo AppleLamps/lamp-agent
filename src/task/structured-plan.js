@@ -51,6 +51,8 @@ export async function requestStructuredPlan({
       heuristic_plan: heuristicPlan,
       risky_boundaries_hint: riskyBoundaries
     },
+    schema: PLAN_SCHEMA,
+    schemaName: "lamp_structured_plan",
     activeTask,
     purpose: "structured_plan"
   });

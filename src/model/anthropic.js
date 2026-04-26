@@ -115,7 +115,8 @@ export function createAnthropicAdapter(modelConfig = {}) {
         ];
         const tooling = anthropicTools(allowedTools);
 
-        for (let step = 0; step < 8; step += 1) {
+        const maxToolSteps = modelConfig.maxToolSteps || 32;
+        for (let step = 0; step < maxToolSteps; step += 1) {
           const body = await callAnthropicMessage({
             apiKey,
             modelConfig,
@@ -218,7 +219,8 @@ export function createAnthropicAdapter(modelConfig = {}) {
           }
         ];
         const tooling = anthropicTools(allowedTools);
-        for (let step = 0; step < 6; step += 1) {
+        const maxRepairSteps = modelConfig.maxRepairSteps || 24;
+        for (let step = 0; step < maxRepairSteps; step += 1) {
           const body = await callAnthropicMessage({
             apiKey,
             modelConfig,

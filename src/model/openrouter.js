@@ -586,7 +586,8 @@ export function createOpenRouterAdapter(modelConfig) {
           { role: "user", content: userContent.join("\n") }
         ];
 
-        for (let step = 0; step < 8; step += 1) {
+        const maxToolSteps = modelConfig.maxToolSteps || 32;
+        for (let step = 0; step < maxToolSteps; step += 1) {
           const body = await requestOpenRouter({
             apiKey,
             modelConfig,
@@ -634,10 +635,10 @@ export function createOpenRouterAdapter(modelConfig) {
         }
 
         return {
-          message: "I reached the tool-iteration limit before the model produced a final answer. Review the task artifacts for partial progress.",
+          message: `I reached the tool-iteration limit (${maxToolSteps} steps) before producing a final answer. Tell me to "continue" if you want me to keep going from here, or check the task artifacts for partial progress.`,
           taskPatch: {
             current_plan: inferPlan(userRequest, projectSummary),
-            assumptions: ["The model reached the maximum tool-call loop limit."]
+            assumptions: [`The model reached the ${maxToolSteps}-step tool-call loop limit.`]
           }
         };
       } catch (error) {
@@ -672,7 +673,7 @@ export function createOpenRouterAdapter(modelConfig) {
      * to parse the resulting text — providers vary in how strictly
      * they obey, so callers should validate the parsed value.
      */
-    async respondJson({ system, user, activeTask = null, purpose = "respond_json", signal = null }) {
+    async respondJson({ system, user, schema = null, schemaName = "structured_output", activeTask = null, purpose = "respond_json", signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
         return {
@@ -692,7 +693,16 @@ export function createOpenRouterAdapter(modelConfig) {
           activeTask,
           purpose,
           messages,
-          options: { tools: false, jsonMode: capabilities.jsonMode },
+          // Prefer strict json_schema when the caller passed a schema:
+          // OpenRouter routes to a provider that supports strict JSON
+          // schema enforcement and rejects malformed responses up
+          // front. Fall back to loose json_object mode when no schema
+          // is provided (or when the model doesn't support it).
+          options: {
+            tools: false,
+            jsonMode: capabilities.jsonMode,
+            jsonSchema: schema ? { name: schemaName, schema } : null
+          },
           signal
         });
         const content = body.choices?.[0]?.message?.content || "";
@@ -777,7 +787,8 @@ export function createOpenRouterAdapter(modelConfig) {
           }
         ];
 
-        for (let step = 0; step < 6; step += 1) {
+        const maxRepairSteps = modelConfig.maxRepairSteps || 24;
+        for (let step = 0; step < maxRepairSteps; step += 1) {
           const body = await requestOpenRouter({ apiKey, modelConfig, messages, options: { allowedTools }, activeTask, purpose: "repair", onToken, signal });
           const message = body.choices?.[0]?.message;
           if (!message) return { ok: false, message: "Repair model returned no message." };
@@ -801,7 +812,7 @@ export function createOpenRouterAdapter(modelConfig) {
           }
         }
 
-        return { ok: false, message: "Repair attempt reached the tool-iteration limit." };
+        return { ok: false, message: `Repair attempt reached the tool-iteration limit (${maxRepairSteps} steps).` };
       } catch (error) {
         return { ok: false, message: `Repair failed: ${error.message}` };
       }
@@ -842,24 +853,39 @@ function summarizeToolResult(result) {
 async function requestOpenRouter({ apiKey, modelConfig, messages, options = { tools: true }, activeTask = null, purpose = "model_call", onToken = null, signal = null }) {
   const models = modelCandidates(modelConfig);
   const maxRetries = Number.isInteger(modelConfig.maxRetries) ? modelConfig.maxRetries : 2;
-  // Stream when the caller asked for it (via onToken) and the model
-  // configuration advertises streaming capability. Otherwise fall back
-  // to the existing single-shot fetch.
   const useStreaming = typeof onToken === "function" && Boolean(modelConfig.capabilities?.streaming);
-  let lastError = null;
 
-  for (const model of models) {
+  // OpenRouter-native fallback: when the provider is OpenRouter and
+  // we have at least one fallback model, send the whole list in
+  // `body.models` so OpenRouter picks a fallback server-side on
+  // context-length errors, moderation, rate limits, or downtime.
+  // Faster than re-issuing client-side and preserves the primary's
+  // request id. For OpenAI / Anthropic / local providers (no native
+  // routing layer), keep the per-model client-side iteration.
+  const useNativeFallback =
+    (modelConfig.provider || "openrouter") === "openrouter" && models.length > 1;
+  const iterableModels = useNativeFallback ? [models[0]] : models;
+  const fallbackModelsForBody = useNativeFallback ? models.slice(1) : null;
+
+  let lastError = null;
+  for (const model of iterableModels) {
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       try {
+        const requestOptions = fallbackModelsForBody
+          ? { ...options, fallbackModels: fallbackModelsForBody }
+          : options;
         const body = useStreaming
-          ? await streamOpenRouterChat(apiKey, modelConfig, model, messages, options, { onToken, signal })
-          : await callOpenRouter(apiKey, modelConfig, model, messages, options, { signal });
+          ? await streamOpenRouterChat(apiKey, modelConfig, model, messages, requestOptions, { onToken, signal })
+          : await callOpenRouter(apiKey, modelConfig, model, messages, requestOptions, { signal });
         await recordModelUsage(activeTask, {
           provider: modelConfig.provider || "openrouter",
-          model,
+          // OpenRouter echoes the model that actually served the
+          // request in body.model when native fallback fires.
+          model: body?.model || model,
           purpose,
           attempt: attempt + 1,
-          fallback: model !== modelConfig.model,
+          fallback: (body?.model && body.model !== modelConfig.model) || model !== modelConfig.model,
+          native_fallback: useNativeFallback,
           usage: normalizeUsage(body.usage),
           status: "ok",
           streaming: useStreaming
@@ -873,13 +899,12 @@ async function requestOpenRouter({ apiKey, modelConfig, messages, options = { to
           purpose,
           attempt: attempt + 1,
           fallback: model !== modelConfig.model,
+          native_fallback: useNativeFallback,
           status: "failed",
           transient: isTransientProviderError(error),
           error: error.message,
           streaming: useStreaming
         });
-        // Aborted requests must not retry — propagate immediately so
-        // the caller can shut down cleanly.
         if (isAbortError(error)) throw error;
         if (!isTransientProviderError(error)) throw error;
         if (attempt < maxRetries) {
@@ -897,11 +922,28 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
     model,
     messages
   };
+  if (Array.isArray(options.fallbackModels) && options.fallbackModels.length) {
+    body.models = [model, ...options.fallbackModels];
+  }
   if (options.tools !== false) {
     body.tools = filterToolDefinitions(options.allowedTools);
     body.tool_choice = "auto";
   }
-  if (options.jsonMode && modelConfig.capabilities?.jsonMode) {
+  if (options.jsonSchema?.schema) {
+    // Strict JSON-Schema enforcement (OpenAI / OpenRouter format).
+    // `provider.require_parameters: true` tells OpenRouter to skip
+    // any underlying provider that can't honor json_schema instead
+    // of silently downgrading.
+    body.response_format = {
+      type: "json_schema",
+      json_schema: {
+        name: options.jsonSchema.name || "structured_output",
+        strict: true,
+        schema: options.jsonSchema.schema
+      }
+    };
+    body.provider = { ...(body.provider || {}), require_parameters: true };
+  } else if (options.jsonMode && modelConfig.capabilities?.jsonMode) {
     body.response_format = { type: "json_object" };
   }
 
@@ -931,6 +973,9 @@ async function streamOpenRouterChat(apiKey, modelConfig, model, messages, option
     messages,
     stream: true
   };
+  if (Array.isArray(options.fallbackModels) && options.fallbackModels.length) {
+    body.models = [model, ...options.fallbackModels];
+  }
   if (options.tools !== false) {
     body.tools = filterToolDefinitions(options.allowedTools);
     body.tool_choice = "auto";
@@ -938,9 +983,11 @@ async function streamOpenRouterChat(apiKey, modelConfig, model, messages, option
   if (options.jsonMode && modelConfig.capabilities?.jsonMode) {
     body.response_format = { type: "json_object" };
   }
-  // OpenRouter passes through usage when `stream_options.include_usage`
-  // is set. Without this, the streamed chunks omit usage and we fall
-  // back to recording a `null` usage record.
+  // `stream_options.include_usage` is deprecated on OpenRouter (usage
+  // is emitted automatically in the final chunk now), but still
+  // required by some OpenAI-compatible local servers. Sending it here
+  // is harmless on OpenRouter and load-bearing on the local-server
+  // path, so we keep it.
   body.stream_options = { include_usage: true };
 
   const response = await fetch(resolveEndpoint(modelConfig), {
@@ -1180,8 +1227,14 @@ function modelCandidates(modelConfig) {
 
 const DEFAULT_OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_OPENROUTER_EXTRA_HEADERS = {
-  "HTTP-Referer": "http://localhost",
-  "X-Title": "Plain-English AI Coding Harness"
+  // Attribution. Override with `model.referer` / `model.title` /
+  // `model.categories` in `.agent/config.json` when running
+  // somewhere other than localhost. Categories accept the official
+  // OpenRouter values; "cli-agent" is the right fit for this
+  // harness.
+  "HTTP-Referer": "https://github.com/AppleLamps/lamp-agent",
+  "X-Title": "lamp-agent",
+  "X-OpenRouter-Categories": "cli-agent"
 };
 
 function resolveEndpoint(modelConfig) {
@@ -1211,6 +1264,14 @@ function resolveHeaders(modelConfig, apiKey) {
     // OpenRouter's `HTTP-Referer`/`X-Title` headers.
   } else {
     Object.assign(headers, DEFAULT_OPENROUTER_EXTRA_HEADERS);
+    // Per-config overrides for attribution.
+    if (typeof modelConfig?.referer === "string") headers["HTTP-Referer"] = modelConfig.referer;
+    if (typeof modelConfig?.title === "string") headers["X-Title"] = modelConfig.title;
+    if (typeof modelConfig?.categories === "string") {
+      headers["X-OpenRouter-Categories"] = modelConfig.categories;
+    } else if (Array.isArray(modelConfig?.categories)) {
+      headers["X-OpenRouter-Categories"] = modelConfig.categories.slice(0, 2).join(",");
+    }
   }
   return headers;
 }
