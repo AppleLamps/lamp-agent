@@ -30,7 +30,14 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "../log/event-log.js";
 import { assertModelAdapter, normalizeModelCapabilities } from "./adapter-contract.js";
-import { TOOL_DEFINITIONS, executeTool, compactPrePatchPlanForModel, buildReasoningPayload, buildSystemContent } from "./openrouter.js";
+import {
+  TOOL_DEFINITIONS,
+  executeTool,
+  compactPrePatchPlanForModel,
+  buildReasoningPayload,
+  buildSystemContent,
+  escalateOnConsecutiveDenials
+} from "./openrouter.js";
 
 const DEFAULT_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -94,7 +101,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
       }
     },
 
-    async respond({ userRequest, projectSummary, prePatchPlan = null, environment = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken: _onToken = null, signal = null }) {
+    async respond({ userRequest, projectSummary, prePatchPlan = null, priorTurns = null, environment = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken: _onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
       if (!apiKey || !modelConfig.allowNetwork) {
         return localFallback(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
@@ -110,12 +117,20 @@ export function createAnthropicAdapter(modelConfig = {}) {
         if (planContext) {
           userContent.push("", "Pre-patch plan (heuristic, advisory):", planContext);
         }
+        if (Array.isArray(priorTurns) && priorTurns.length) {
+          userContent.push(
+            "",
+            "Earlier in this task, you said:",
+            ...priorTurns.map((turn, idx) => `[turn ${idx + 1}]\n${turn}`)
+          );
+        }
         const messages = [
           { role: "user", content: userContent.join("\n") }
         ];
         const tooling = anthropicTools(allowedTools, { promptCaching: !!modelConfig.promptCaching });
 
         const maxToolSteps = modelConfig.maxToolSteps || 32;
+        const denialState = { lastKey: null, count: 0 };
         for (let step = 0; step < maxToolSteps; step += 1) {
           const body = await callAnthropicMessage({
             apiKey,
@@ -157,7 +172,8 @@ export function createAnthropicAdapter(modelConfig = {}) {
           for (const toolUse of toolUses) {
             onProgress(`Using tool: ${toolUse.name}`);
             await logToolEvent(activeTask, toolUse.name, toolUse.input, "started");
-            const result = await executeTool(toolUse.name, toolUse.input || {}, { tools, activeTask, allowedTools });
+            const rawResult = await executeTool(toolUse.name, toolUse.input || {}, { tools, activeTask, allowedTools });
+            const result = escalateOnConsecutiveDenials({ result: rawResult, toolName: toolUse.name, state: denialState });
             await logToolEvent(activeTask, toolUse.name, toolUse.input, "completed", result);
             toolResults.push({
               type: "tool_result",
@@ -220,6 +236,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
         ];
         const tooling = anthropicTools(allowedTools, { promptCaching: !!modelConfig.promptCaching });
         const maxRepairSteps = modelConfig.maxRepairSteps || 24;
+        const denialState = { lastKey: null, count: 0 };
         for (let step = 0; step < maxRepairSteps; step += 1) {
           const body = await callAnthropicMessage({
             apiKey,
@@ -238,7 +255,8 @@ export function createAnthropicAdapter(modelConfig = {}) {
           const toolResults = [];
           for (const toolUse of toolUses) {
             await logToolEvent(activeTask, toolUse.name, toolUse.input, "repair_started");
-            const result = await executeTool(toolUse.name, toolUse.input || {}, { tools, activeTask, allowedTools });
+            const rawResult = await executeTool(toolUse.name, toolUse.input || {}, { tools, activeTask, allowedTools });
+            const result = escalateOnConsecutiveDenials({ result: rawResult, toolName: toolUse.name, state: denialState });
             await logToolEvent(activeTask, toolUse.name, toolUse.input, "repair_completed", result);
             toolResults.push({
               type: "tool_result",

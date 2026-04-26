@@ -561,7 +561,7 @@ export function createOpenRouterAdapter(modelConfig) {
       }
     },
 
-    async respond({ userRequest, projectSummary, prePatchPlan = null, environment = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken = null, signal = null }) {
+    async respond({ userRequest, projectSummary, prePatchPlan = null, priorTurns = null, environment = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
         return localHarnessResponse(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
@@ -581,12 +581,24 @@ export function createOpenRouterAdapter(modelConfig) {
         if (planContext) {
           userContent.push("", "Pre-patch plan (heuristic, advisory):", planContext);
         }
+        if (Array.isArray(priorTurns) && priorTurns.length) {
+          // Replay prior assistant text from this task so /resume keeps
+          // conversational continuity. Plain text only — tool_call_ids
+          // don't round-trip across processes, so we don't try to
+          // reconstruct the original messages array.
+          userContent.push(
+            "",
+            "Earlier in this task, you said:",
+            ...priorTurns.map((turn, idx) => `[turn ${idx + 1}]\n${turn}`)
+          );
+        }
         const messages = [
           { role: "system", content: buildSystemContent(SYSTEM_PROMPT, environment) },
           { role: "user", content: userContent.join("\n") }
         ];
 
         const maxToolSteps = modelConfig.maxToolSteps || 32;
+        const denialState = { lastKey: null, count: 0 };
         for (let step = 0; step < maxToolSteps; step += 1) {
           const body = await requestOpenRouter({
             apiKey,
@@ -620,7 +632,8 @@ export function createOpenRouterAdapter(modelConfig) {
             const args = parseToolArgs(toolCall.function?.arguments);
             onProgress(`Using tool: ${name}`);
             await logToolEvent(activeTask, name, args, "started");
-            const result = await executeTool(name, args, { tools, activeTask, allowedTools });
+            const rawResult = await executeTool(name, args, { tools, activeTask, allowedTools });
+            const result = escalateOnConsecutiveDenials({ result: rawResult, toolName: name, state: denialState });
             await logToolEvent(activeTask, name, args, "completed", result);
             messages.push({
               role: "tool",
@@ -788,6 +801,7 @@ export function createOpenRouterAdapter(modelConfig) {
         ];
 
         const maxRepairSteps = modelConfig.maxRepairSteps || 24;
+        const denialState = { lastKey: null, count: 0 };
         for (let step = 0; step < maxRepairSteps; step += 1) {
           const body = await requestOpenRouter({ apiKey, modelConfig, messages, options: { allowedTools }, activeTask, purpose: "repair", onToken, signal });
           const message = body.choices?.[0]?.message;
@@ -801,7 +815,8 @@ export function createOpenRouterAdapter(modelConfig) {
             const name = toolCall.function?.name;
             const args = parseToolArgs(toolCall.function?.arguments);
             await logToolEvent(activeTask, name, args, "repair_started");
-            const result = await executeTool(name, args, { tools, activeTask, allowedTools });
+            const rawResult = await executeTool(name, args, { tools, activeTask, allowedTools });
+            const result = escalateOnConsecutiveDenials({ result: rawResult, toolName: name, state: denialState });
             await logToolEvent(activeTask, name, args, "repair_completed", result);
             messages.push({
               role: "tool",
@@ -1481,6 +1496,44 @@ function filterToolDefinitions(allowedTools) {
  *
  * Returns `null` when there's nothing useful to add.
  */
+/**
+ * Track consecutive permission denials within a single respond/repair
+ * loop. When the model retries the same tier+tool back-to-back, the
+ * second denial's tool result picks up a `harness_note` string that
+ * tells the model to stop and propose a different path. Without this
+ * the model often retries the same operation with slightly different
+ * args, frustrating users who clearly already said no.
+ *
+ * The `state` object is owned by the caller (one per loop iteration)
+ * and mutated here. Returns the (possibly augmented) result; the
+ * caller stringifies it as the tool message content.
+ */
+export function escalateOnConsecutiveDenials({ result, toolName, state }) {
+  if (!result?.denied) {
+    state.lastKey = null;
+    state.count = 0;
+    return result;
+  }
+  const tier = result.decision?.tier || "denied";
+  const key = `${tier}|${toolName}`;
+  if (key === state.lastKey) {
+    state.count += 1;
+  } else {
+    state.lastKey = key;
+    state.count = 1;
+  }
+  if (state.count >= 2) {
+    const augmented = {
+      ...result,
+      harness_note: `The user has now denied operations of tier "${tier}" twice in a row. Stop attempting this approach. Either propose a fundamentally different path, or ask the user a clarifying question before trying again.`
+    };
+    state.lastKey = null;
+    state.count = 0;
+    return augmented;
+  }
+  return result;
+}
+
 /**
  * Append working-directory and platform lines to the system prompt
  * when an `environment` object is supplied. Codex / Claude Code both

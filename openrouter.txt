@@ -12,8 +12,8 @@ item below has the why, the how, and the test/pitfall notes.
 - [x] 3. OpenRouter `context-compression` plugin for long sessions
 - [x] 4. Extended thinking / reasoning, opt-in
 - [x] 5. System prompt should include `cwd` and platform
-- [ ] 6. Denial-escalation pattern
-- [ ] 7. Conversation memory across sessions / `/resume`
+- [x] 6. Denial-escalation pattern
+- [x] 7. Conversation memory across sessions / `/resume`
 
 ---
 
@@ -211,6 +211,22 @@ assistant text.
 ## Status log
 
 (Append entries here as items land. Newest at the top.)
+
+- **Items 6, 7 landed.** Denial escalation: a small
+  `escalateOnConsecutiveDenials({ result, toolName, state })` helper
+  exported from `src/model/openrouter.js` tracks consecutive denials
+  by `${tier}|${toolName}` within one respond/repair loop; on the
+  second consecutive denial of the same key, the tool result picks
+  up a `harness_note` telling the model to stop and propose a
+  different path. Wired into both adapters' respond + repair loops.
+  5 unit tests in `test/denial-escalation.test.js`. /resume replay:
+  new `collectPriorAssistantTurns(activeTask, { maxTurns, maxChars })`
+  helper reads `events.jsonl`, extracts assistant_response messages
+  (last 3 within an 8000-char budget), and `runResumeLifecycle`
+  hands them as `priorTurns` to `model.respond`. Both adapters
+  append "Earlier in this task, you said: [turn N] …" to the user
+  message — plain text only, no tool_call_id reconstruction.
+  Test count: 277 unit (274 pass + 3 skip) + 15 e2e.
 
 - **Items 4, 5 landed.** `model.reasoning` opt-in:
   `{ effort, max_tokens, exclude }` flows through to OpenRouter as

@@ -280,6 +280,97 @@ test("OpenRouter adapter omits body.reasoning when not configured", async () => 
   }
 });
 
+test("OpenRouter adapter replays priorTurns into the user message for /resume continuity", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-prior-"));
+  const activeTask = { id: "task-prior", dir: path.join(cwd, ".agent", "tasks", "task-prior") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let body = null;
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        })
+      };
+    };
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "continue",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      priorTurns: ["I read user.ts and noticed the bug.", "I'll patch the missing assertion next."],
+      tools: {},
+      activeTask
+    });
+    const userMessage = body.messages.find((m) => m.role === "user");
+    assert.ok(userMessage, "user message should be present");
+    assert.match(userMessage.content, /Earlier in this task, you said:/);
+    assert.match(userMessage.content, /\[turn 1\]\nI read user\.ts/);
+    assert.match(userMessage.content, /\[turn 2\]\nI'll patch the missing assertion next\./);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter adapter omits the prior-turns preamble when priorTurns is empty", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-noprior-"));
+  const activeTask = { id: "task-np", dir: path.join(cwd, ".agent", "tasks", "task-np") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let body = null;
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        })
+      };
+    };
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      priorTurns: [],
+      tools: {},
+      activeTask
+    });
+    const userMessage = body.messages.find((m) => m.role === "user");
+    assert.equal(/Earlier in this task/.test(userMessage.content), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("OpenRouter adapter appends cwd and platform to the system prompt when environment is provided", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-env-"));
   const activeTask = { id: "task-env", dir: path.join(cwd, ".agent", "tasks", "task-env") };
