@@ -5,6 +5,7 @@ import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config/config.js";
 import { createTask, loadTask, updateTaskStatus } from "./task/task-manager.js";
+import { collectPriorAssistantTurns } from "./task/event-replay.js";
 import { appendEvent } from "./log/event-log.js";
 import { createToolRuntime } from "./tools/runtime.js";
 import { summarizeProject, finalReview } from "./review/review.js";
@@ -1415,33 +1416,6 @@ async function latestEventPayload(activeTask, type, key) {
   return null;
 }
 
-/**
- * Collect prior assistant text from this task's event log so a /resume
- * can hand the model the conversation it had before being interrupted.
- * Tool calls and tool results are intentionally NOT replayed: their
- * tool_call_ids don't round-trip across processes and stitching them
- * back together cleanly is fragile. Plain assistant text is enough
- * to give the model conversational continuity.
- */
-async function collectPriorAssistantTurns(activeTask, { maxTurns = 3, maxChars = 8000 } = {}) {
-  const events = await readJsonLines(path.join(activeTask.dir, "events.jsonl"));
-  const turns = [];
-  for (const event of events) {
-    if (event?.type === "assistant_response" && typeof event.message === "string" && event.message.trim()) {
-      turns.push(event.message.trim());
-    }
-  }
-  // Keep the most recent turns within the char budget; oldest dropped first.
-  const tail = turns.slice(-maxTurns);
-  let total = 0;
-  const out = [];
-  for (let i = tail.length - 1; i >= 0; i -= 1) {
-    if (total + tail[i].length > maxChars) break;
-    out.unshift(tail[i]);
-    total += tail[i].length;
-  }
-  return out;
-}
 
 async function readExistingCritique(activeTask) {
   const text = await readText(path.join(activeTask.dir, "review.md"), "");

@@ -155,6 +155,52 @@ test("e2e: CLI records a failing verify run on a broken Node fixture", async () 
   }
 });
 
+test("e2e: stub adapter receives the narrowed EXPLAIN_ALLOWED_TOOLS list for explain-style prompts", async () => {
+  const fixture = await copyFixture("node-builtin-test-passing");
+  const stub = await writeStubScript({
+    respond: {
+      message: "Stub explain answer.",
+      taskPatch: { assumptions: ["explain-narrowing test"] }
+    }
+  });
+  const cli = spawnCli({
+    cwd: fixture.cwd,
+    env: {
+      LAMP_MODEL_ADAPTER: STUB_ADAPTER_PATH,
+      LAMP_STUB_SCRIPT: stub.path
+    }
+  });
+  try {
+    await cli.expect(/Lamp Agent/);
+    await cli.sendLine("Explain what kind of project this is");
+    await cli.expect(/\+-- assistant /, { timeout: 60000 });
+    await cli.sendLine("/exit");
+    const result = await cli.exit();
+    assert.equal(result.code, 0);
+
+    const tasksDir = path.join(fixture.cwd, ".agent", "tasks");
+    const taskIds = await readdir(tasksDir);
+    assert.equal(taskIds.length, 1);
+    const events = (await readFile(path.join(tasksDir, taskIds[0], "events.jsonl"), "utf8"))
+      .split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+    const allowedToolsEvent = events.find((e) => e.type === "stub_allowed_tools" && e.phase === "respond");
+    assert.ok(allowedToolsEvent, "stub should record the allowedTools list it received");
+    const list = allowedToolsEvent.allowed_tools;
+    assert.ok(Array.isArray(list) && list.length > 0);
+    // Read-only tools must be present.
+    for (const expected of ["read_file", "search_files", "find_definition", "git_status"]) {
+      assert.ok(list.includes(expected), `expected ${expected} in narrowed list`);
+    }
+    // Write tools must be ABSENT — that is the whole point of the narrowing.
+    for (const forbidden of ["apply_patch", "write_file", "delete_file", "rename_file", "branch_create"]) {
+      assert.equal(list.includes(forbidden), false, `${forbidden} must not appear in the explain narrowing`);
+    }
+  } finally {
+    cli.kill();
+    await Promise.all([fixture.cleanup(), stub.cleanup()]);
+  }
+});
+
 test("e2e: stub adapter shows destructive commands are blocked by the permission engine", async () => {
   const fixture = await copyFixture("node-builtin-test-passing");
   const stub = await writeStubScript({

@@ -60,9 +60,20 @@ export async function createAdapter(modelConfig) {
       return { ok: false, message: "Stub adapter does not support streaming." };
     },
 
-    async respond({ tools, activeTask, onProgress = () => {} }) {
+    async respond({ tools, activeTask, allowedTools = null, onProgress = () => {} }) {
       const respondScript = script.respond || {};
       maybeThrow(respondScript, "respond");
+      // Surface the allowedTools list the harness handed us in the
+      // task's events.jsonl so e2e tests can verify e.g. that an
+      // explain-style task receives the narrowed read-only set.
+      if (activeTask?.dir) {
+        const { appendEvent } = await import("../../../src/log/event-log.js");
+        await appendEvent(activeTask.dir, {
+          type: "stub_allowed_tools",
+          phase: "respond",
+          allowed_tools: Array.isArray(allowedTools) ? allowedTools : null
+        });
+      }
       const toolResults = await runSteps(respondScript.steps || [], { tools, activeTask, onProgress, label: "stub respond" });
       return {
         message: respondScript.message || "Stub response: no message configured.",

@@ -211,7 +211,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
       }
     },
 
-    async repair({ activeTask, tools, userRequest, environment = null, failedChecks, attempt, maxAttempts, allowedTools = null, onToken: _onToken = null, signal: _signal = null }) {
+    async repair({ activeTask, tools, userRequest, projectSummary = null, environment = null, failedChecks, attempt, maxAttempts, allowedTools = null, onToken: _onToken = null, signal: _signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
       if (!apiKey || !modelConfig.allowNetwork) {
         return {
@@ -228,6 +228,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
             role: "user",
             content: JSON.stringify({
               user_request: userRequest,
+              project_summary: projectSummary,
               attempt,
               max_attempts: maxAttempts,
               failed_checks: failedChecks
