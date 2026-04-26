@@ -13,6 +13,7 @@ import { detectTestRunner, findRelatedTestFiles } from "../checks/test-runner-de
 import { appendEvent } from "../log/event-log.js";
 import {
   buildCodeIndex,
+  dependencyGraph as dependencyGraphIndex,
   detectRoutes,
   findReferences as findReferencesIndex,
   findSymbolCallers as findSymbolCallersIndex,
@@ -694,6 +695,11 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
     async findSymbolDependencies(relativePath) {
       const index = await getCodeIndex();
       return findSymbolDependenciesIndex({ codeIndex: index, file: relativePath });
+    },
+
+    async dependencyGraph(relativePath = null) {
+      const index = await getCodeIndex();
+      return dependencyGraphIndex({ codeIndex: index, file: relativePath });
     },
 
     async routeMap() {

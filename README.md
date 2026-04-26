@@ -75,9 +75,10 @@ genuinely blocking finding, and the system prompt reads as "you're a
 coding assistant; here are your tools" rather than "you operate
 inside a permissioned harness".
 
-Latest verified baseline: `npm test` passes with 212 tests
+Latest verified baseline: `npm test` passes with 214 tests
 (0 skipped, 0 failing); `npm run test:e2e` runs 15 end-to-end tests
-against four fixture repositories.
+with 14 passing and the pytest fixture skipped when `pytest` is not
+installed.
 
 ### Lifecycle shape
 
@@ -186,15 +187,17 @@ edit-spec from the model and persist them as `plan.json` and
   danger-zone crosses (lockfile / manifest / secret /
   avoid_touching) as keyword candidates. Locked in by
   `test/import-resolver.test.js` (7 tests),
-  `test/symbol-callers.test.js` (7 tests), and 4 new rename-impact
+  `test/symbol-callers.test.js` (9 tests), and 4 new rename-impact
   tests in `test/pre-patch-plan.test.js`. The repair loop now
   passes `summarizeFailureForRepair` the runtime code index and
   attaches each failed test file's resolved internal imports as
-  `import_graph` before calling `model.repair`. **Open**:
-  `dependency_graph` aggregator, `component_map` tool, signature-
-  change impact (renames are covered; argument-list changes are
-  not), tsconfig-paths alias resolution, and Python
-  `from x import y` resolution.
+  `import_graph` before calling `model.repair`. `dependency_graph`
+  is now available as a runtime and model tool, returning whole-
+  workspace nodes, resolved internal edges, external imports, and
+  focused subgraphs with direct dependents when a path is supplied.
+  **Open**: `component_map` tool, signature-change impact (renames
+  are covered; argument-list changes are not), tsconfig-paths alias
+  resolution, and Python `from x import y` resolution.
 
 ### Bugs caught while building Phase 3
 
@@ -212,14 +215,21 @@ edit-spec from the model and persist them as `plan.json` and
 - Phase 2 roadmap items are complete.
 - Phase 3 items 1–8 are in flight (see per-item status above and
   `phase 3.txt`); items 9–10 are not started.
-- Most recent slice: **resumable task command**. `/resume <task-id>`
+- Most recent slice: **dependency graph tool**. `dependency_graph(path?)`
+  is wired through `src/code/code-index.js`, `src/tools/runtime.js`,
+  `src/model/openrouter.js`, phase-controller allowed tools, and the
+  e2e stub adapter. Without a path it returns the workspace import
+  graph; with a path it returns that file's reachable dependency
+  subgraph plus direct dependents that import it. Tests cover both
+  shapes and runtime integration.
+- Slice before that: **resumable task command**. `/resume <task-id>`
   loads `.agent/tasks/<id>/task.json`, reconstructs the phase
   controller, rejects non-resumable tasks, records `task_resumed`,
   and continues at the next incomplete phase. The first e2e coverage
   resumes a planned task at patch, creates a file through the stub
   adapter, verifies/skips checks as appropriate, and reaches final
   review.
-- Slice before that: **repair-loop import graph integration**.
+- Earlier item-8 slice: **repair-loop import graph integration**.
   `summarizeFailureForRepair(parsed, { codeIndex })` now calls
   `findSymbolDependencies` for each indexed failed file and attaches
   internal resolved imports as `import_graph`. `verifyAndRepair`
@@ -244,8 +254,7 @@ edit-spec from the model and persist them as `plan.json` and
    signature-change impact (rename and repair import graph are covered;
    argument-list /
    return-type rewrites need an edit-spec hook or a pre-edit AST
-   diff), the `dependency_graph(path?)` aggregator, the
-   `component_map()` tool, tsconfig-paths alias resolution
+   diff), the `component_map()` tool, tsconfig-paths alias resolution
    (extend `src/code/import-resolver.js` with a
    `resolveTsconfigPaths` step that reads `tsconfig.json` and
    applies `compilerOptions.paths`), and Python `from x import y`
@@ -309,7 +318,7 @@ Implemented (Phase 1–2 baseline plus Phase 3 items 1–8 in flight):
   `replace_range`, `replace_exact`, `insert_before`, `insert_after`.
 - Code intelligence (regex-based): `find_symbols`, `find_definition`,
   `find_references`, `find_imports`, `find_exports`, `route_map`,
-  `symbol_callers`, `symbol_dependencies`.
+  `symbol_callers`, `symbol_dependencies`, `dependency_graph`.
 - Targeted test runners: `detect_test_runner`, `run_test_file`,
   `run_test_name`, `run_related_tests` with reporter-aware command
   builders for Vitest / Jest / Node `--test`.

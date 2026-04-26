@@ -182,6 +182,8 @@ async function runStubTool(step, tools, activeTask) {
       return tools.findImports(args.path);
     case "find_exports":
       return tools.findExports(args.path);
+    case "dependency_graph":
+      return tools.dependencyGraph(args.path || null);
     case "route_map":
       return tools.routeMap();
     case "detect_test_runner":

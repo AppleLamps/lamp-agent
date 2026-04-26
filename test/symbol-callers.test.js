@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildCodeIndex, findSymbolCallers, findSymbolDependencies } from "../src/code/code-index.js";
+import { buildCodeIndex, dependencyGraph, findSymbolCallers, findSymbolDependencies } from "../src/code/code-index.js";
 import { createToolRuntime } from "../src/tools/runtime.js";
 
 async function setupWorkspace(layout) {
@@ -178,6 +178,69 @@ test("symbol_dependencies resolves relative imports against the workspace", asyn
   }
 });
 
+test("dependency_graph returns workspace nodes, internal edges, and external imports", async () => {
+  const { root, files } = await setupWorkspace({
+    "src/auth/login.ts": "export function login() { return 1; }\n",
+    "src/auth/session.ts": "export function session() { return 2; }\n",
+    "src/api/handler.ts": [
+      "import { login } from \"../auth/login\";",
+      "import { session } from \"../auth/session\";",
+      "import lodash from \"lodash\";",
+      "export const x = login() + session();",
+      ""
+    ].join("\n"),
+    "src/page.ts": [
+      "import { x } from \"./api/handler\";",
+      "export const page = x;",
+      ""
+    ].join("\n")
+  });
+  try {
+    const codeIndex = await buildCodeIndex({ cwd: root, files });
+    const graph = dependencyGraph({ codeIndex });
+    assert.equal(graph.ok, true);
+    assert.deepEqual(graph.nodes, [
+      "src/api/handler.ts",
+      "src/auth/login.ts",
+      "src/auth/session.ts",
+      "src/page.ts"
+    ]);
+    assert.deepEqual(graph.edges, [
+      { from: "src/api/handler.ts", to: "src/auth/login.ts" },
+      { from: "src/api/handler.ts", to: "src/auth/session.ts" },
+      { from: "src/page.ts", to: "src/api/handler.ts" }
+    ]);
+    assert.deepEqual(graph.external_imports, {
+      "src/api/handler.ts": ["lodash"]
+    });
+    assert.equal(graph.internal_edge_count, 3);
+    assert.equal(graph.external_import_count, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("dependency_graph can focus on one file plus direct dependents", async () => {
+  const { root, files } = await setupWorkspace({
+    "src/core.ts": "export const core = 1;\n",
+    "src/feature.ts": "import { core } from \"./core\";\nexport const feature = core;\n",
+    "src/page.ts": "import { feature } from \"./feature\";\nexport const page = feature;\n",
+    "src/other.ts": "export const other = 1;\n"
+  });
+  try {
+    const codeIndex = await buildCodeIndex({ cwd: root, files });
+    const graph = dependencyGraph({ codeIndex, file: "src/feature.ts" });
+    assert.deepEqual(graph.nodes, ["src/core.ts", "src/feature.ts", "src/page.ts"]);
+    assert.deepEqual(graph.edges, [
+      { from: "src/feature.ts", to: "src/core.ts" },
+      { from: "src/page.ts", to: "src/feature.ts" }
+    ]);
+    assert.equal(graph.root, "src/feature.ts");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runtime exposes findSymbolCallers and findSymbolDependencies", async () => {
   const { root, files } = await setupWorkspace({
     "src/util.ts": "export function hello() { return 'hi'; }\n",
@@ -202,6 +265,10 @@ test("runtime exposes findSymbolCallers and findSymbolDependencies", async () =>
     assert.equal(deps.ok, true);
     assert.equal(deps.internal_count, 1);
     assert.equal(deps.dependencies[0].resolved, "src/util.ts");
+
+    const graph = await tools.dependencyGraph("src/main.ts");
+    assert.equal(graph.ok, true);
+    assert.deepEqual(graph.edges, [{ from: "src/main.ts", to: "src/util.ts" }]);
   } finally {
     // Suppress reference to allow GC of any cached index.
     files.length = 0;

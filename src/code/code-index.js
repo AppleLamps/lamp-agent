@@ -227,6 +227,83 @@ export function findSymbolDependencies({ codeIndex, file }) {
   };
 }
 
+/**
+ * Build an import graph over the indexed workspace. Edges are internal
+ * imports resolved to workspace-relative files; bare package imports
+ * are kept separately as external dependencies. When `file` is
+ * provided, return the reachable dependency subgraph for that file
+ * plus direct dependents that import it.
+ */
+export function dependencyGraph({ codeIndex, file = null } = {}) {
+  const fileSet = new Set(codeIndex?.files || []);
+  const importsByFile = codeIndex?.imports || new Map();
+  const graph = new Map();
+  const external = new Map();
+
+  for (const indexedFile of fileSet) {
+    graph.set(indexedFile, new Set());
+    external.set(indexedFile, new Set());
+  }
+
+  for (const [from, imports] of importsByFile) {
+    if (!graph.has(from)) graph.set(from, new Set());
+    if (!external.has(from)) external.set(from, new Set());
+    for (const entry of imports || []) {
+      const resolved = resolveImport({ from, source: entry?.source || "", fileSet });
+      if (resolved) {
+        graph.get(from).add(resolved);
+      } else if (entry?.source) {
+        external.get(from).add(entry.source);
+      }
+    }
+  }
+
+  const normalizedRoot = file ? String(file).replaceAll("\\", "/") : null;
+  const included = normalizedRoot ? collectRelatedGraphFiles(graph, normalizedRoot) : new Set(graph.keys());
+  const nodes = [...included].sort();
+  const edges = [];
+  const externalImports = {};
+
+  for (const from of nodes) {
+    for (const to of graph.get(from) || []) {
+      if (!included.has(to)) continue;
+      edges.push({ from, to });
+    }
+    const externals = [...(external.get(from) || [])].sort();
+    if (externals.length) externalImports[from] = externals;
+  }
+
+  edges.sort((a, b) => `${a.from}\0${a.to}`.localeCompare(`${b.from}\0${b.to}`));
+  return {
+    ok: true,
+    root: normalizedRoot,
+    nodes,
+    edges,
+    external_imports: externalImports,
+    internal_edge_count: edges.length,
+    external_import_count: Object.values(externalImports).reduce((sum, list) => sum + list.length, 0),
+    indexed: fileSet.size
+  };
+}
+
+function collectRelatedGraphFiles(graph, root) {
+  const included = new Set();
+  if (!graph.has(root)) return included;
+  const stack = [root];
+  while (stack.length) {
+    const current = stack.pop();
+    if (included.has(current)) continue;
+    included.add(current);
+    for (const dep of graph.get(current) || []) {
+      if (!included.has(dep)) stack.push(dep);
+    }
+  }
+  for (const [from, deps] of graph) {
+    if (deps.has(root)) included.add(from);
+  }
+  return included;
+}
+
 function importLocalName(importEntry, exportedName, resolvedFile, codeIndex) {
   const names = importEntry?.names || [];
   for (const entry of names) {

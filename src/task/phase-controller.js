@@ -14,7 +14,7 @@ export const TASK_PHASES = {
   triage: {
     status: "triage",
     requiredOutputs: ["project_summary"],
-    allowedTools: ["list_files", "read_file", "search_files", "find_symbols", "find_definition", "find_references", "find_imports", "find_exports", "symbol_callers", "symbol_dependencies", "route_map", "detect_test_runner", "git_status"],
+    allowedTools: ["list_files", "read_file", "search_files", "find_symbols", "find_definition", "find_references", "find_imports", "find_exports", "symbol_callers", "symbol_dependencies", "dependency_graph", "route_map", "detect_test_runner", "git_status"],
     next: "plan"
   },
   plan: {
@@ -26,7 +26,7 @@ export const TASK_PHASES = {
   patch: {
     status: "patching",
     requiredOutputs: ["assistant_response"],
-    allowedTools: ["read_file", "search_files", "find_symbols", "find_definition", "find_references", "find_imports", "find_exports", "symbol_callers", "symbol_dependencies", "route_map", "apply_patch", "preview_patch", "write_file", "create_file", "delete_file", "rename_file", "replace_range", "replace_exact", "insert_before", "insert_after", "run_command"],
+    allowedTools: ["read_file", "search_files", "find_symbols", "find_definition", "find_references", "find_imports", "find_exports", "symbol_callers", "symbol_dependencies", "dependency_graph", "route_map", "apply_patch", "preview_patch", "write_file", "create_file", "delete_file", "rename_file", "replace_range", "replace_exact", "insert_before", "insert_after", "run_command"],
     next: "verify"
   },
   verify: {

@@ -383,6 +383,19 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "dependency_graph",
+      description: "Return the workspace import graph. With path omitted, returns all indexed files and resolved internal import edges. With path set, returns the file's reachable internal dependencies plus direct dependents that import it. Bare package imports are listed separately as external_imports.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Optional workspace-relative root file for a focused subgraph." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "route_map",
       description: "Detect HTTP routes in the workspace. Covers Express/Fastify/Koa-style app.METHOD calls, React Router <Route path>, and Next.js pages/ and app/ file routes.",
       parameters: { type: "object", properties: {} }
@@ -1250,6 +1263,8 @@ export async function executeTool(name, args, { tools, activeTask, allowedTools 
       return tools.findSymbolCallers(args.symbol);
     case "symbol_dependencies":
       return tools.findSymbolDependencies(args.path);
+    case "dependency_graph":
+      return tools.dependencyGraph(args.path || null);
     case "route_map":
       return tools.routeMap();
     case "detect_test_runner":

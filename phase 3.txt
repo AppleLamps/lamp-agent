@@ -13,22 +13,23 @@ the sub-bullets. The high-level checklist immediately below mirrors that.
 
 ## Resume Point For The Next Agent
 
-- **Latest completed slice:** `/resume <task-id>` for artifact-backed
-  task continuation.
-- **Test baseline:** `npm test` → 212 tests pass (0 skipped, 0
-  failing); `npm run test:e2e` → 15 e2e tests pass.
+- **Latest completed slice:** `dependency_graph(path?)` for workspace-
+  level and focused import graph summaries.
+- **Test baseline:** `npm test` → 214 tests pass (0 skipped, 0
+  failing); `npm run test:e2e` → 15 e2e tests, 14 pass and 1
+  pytest fixture skips when `pytest` is unavailable.
 - **Last two slices in order:**
-  1. Repair-loop import graph integration — `summarizeFailureForRepair`
-     accepts `{ codeIndex }`, attaches failed test files' resolved
-     internal imports as `import_graph`, and `verifyAndRepair`
-     threads the runtime code index into the `model.repair` payload.
-  2. `/resume <task-id>` — the CLI loads a recorded task, reconstructs
+  1. `/resume <task-id>` — the CLI loads a recorded task, reconstructs
      its phase controller, rejects non-resumable tasks, records a
      `task_resumed` event, and continues at the next incomplete phase.
+  2. `dependency_graph(path?)` — `src/code/code-index.js` builds a
+     workspace import graph with resolved internal edges and external
+     imports; the runtime/model tool returns the full graph or a
+     focused dependency subgraph plus direct dependents for a path.
 
-- **Recommended next slice:** the rest of item 8: signature-change
-  impact, `dependency_graph`, `component_map`, tsconfig-paths, and
-  Python imports.
+- **Recommended next slice:** the rest of item 8, starting with
+  `component_map()`, then signature-change impact, tsconfig-paths,
+  and Python imports.
 
 Current status:
 
@@ -163,8 +164,9 @@ Current status:
   recorded task and continues at the next incomplete phase using
   persisted task artifacts. Remaining limitation: it does not
   resurrect a deleted temp shadow workspace after a process restart.
-- [~] Dependency-aware edits and cross-file binding (item 8) — three
-  slices land (cross-file binding, rename impact, repair import graph).
+- [~] Dependency-aware edits and cross-file binding (item 8) — four
+  slices land (cross-file binding, rename impact, repair import graph,
+  dependency graph).
   `src/code/import-resolver.js` is the new shared resolver: relative-import sources resolve against the workspace
   file set with the standard `.ts/.tsx/.js/.jsx/.mjs/.cjs` extension
   list and an `index.<ext>` fallback; `src/checks/relevant-files.js`
@@ -187,20 +189,23 @@ Current status:
   `expected_scope.candidate_files` so they participate in the
   same danger-zone crosses as keyword candidates. Locked in by
   `test/import-resolver.test.js` (7 tests),
-  `test/symbol-callers.test.js` (7 tests), and 4 new
-  rename-impact tests in `test/pre-patch-plan.test.js`. Still
-  open: `dependency_graph(path?)` aggregator, `component_map()`
-  tool, signature-change impact (renames covered; arg-list
-  rewrites not yet), tsconfig-paths alias resolution, and Python
-  `from x import y` resolution.
+  `test/symbol-callers.test.js` (9 tests), and 4 new
+  rename-impact tests in `test/pre-patch-plan.test.js`.
+  `dependency_graph(path?)` is wired through runtime/model tools and
+  phase allowed-tools, returning whole-workspace nodes, internal
+  edges, external imports, and focused path subgraphs with direct
+  dependents. Still open: `component_map()` tool, signature-change
+  impact (renames covered; arg-list rewrites not yet), tsconfig-paths
+  alias resolution, and Python `from x import y` resolution.
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
 - [ ] GitHub/CI integration (item 10) — not started.
 
 Where we are now:
 
-- Latest verified baseline: `npm test` passes with 212 tests
+- Latest verified baseline: `npm test` passes with 214 tests
   (0 skipped, 0 failing). `npm run test:e2e` runs 15 end-to-end
-  tests against four fixture repositories.
+  tests; on this machine 14 pass and the pytest fixture skips when
+  `pytest` is unavailable.
 - The Phase 2 baseline (seven-phase lifecycle, structured task
   artifacts, snapshot-based undo, shadow workspace, regex
   code-intel, targeted check runner, bounded repair loop, styled
@@ -237,7 +242,8 @@ Carried forward from Phase 2:
   `replace_exact`, `insert_before/after`, `create_file`, `delete_file`,
   `rename_file`), `apply_patch`, `run_command`, broad and targeted check
   runners, code intelligence (`find_symbols`, `find_definition`,
-  `find_references`, `find_imports`, `find_exports`, `route_map`).
+  `find_references`, `find_imports`, `find_exports`, `route_map`,
+  `symbol_callers`, `symbol_dependencies`, `dependency_graph`).
 - Shadow workspace via git worktree or filtered temp copy, with apply-back,
   hash-based conflict detection, and per-file keep/apply/save resolution.
 - Bounded verify-and-repair loop (3 attempts) that prefers targeted runs when
@@ -268,12 +274,12 @@ exact `[x]` / `[~]` / `[ ]` state. Items 9–10 are not yet started.
 
 Recommended next steps in priority order:
 
-1. Remaining item 8 leftovers: signature-change impact
+1. Remaining item 8 leftovers: `component_map()` React-component
+   discovery, signature-change impact
    (parameter list / return type rewrites — distinct from
    rename, requires the model's edit-spec or a pre-edit AST
-   diff), the `dependency_graph(path?)` aggregator, the
-   `component_map()` React-component tool, tsconfig-paths alias
-   resolution (extend `src/code/import-resolver.js`), Python
+   diff), tsconfig-paths alias resolution (extend
+   `src/code/import-resolver.js`), Python
    `from x import y` resolution, and re-export / dynamic-import
    coverage tests.
 2. Item 6 leftover: wire `repair_findings` (schema is defined in
@@ -855,10 +861,10 @@ finished.
 
 ## 8. Dependency-Aware Edits And Cross-File Binding
 
-Status: in progress. Cross-file binding and the two foundational
-tools (`symbol_callers`, `symbol_dependencies`) land this round;
-`dependency_graph`, `component_map`, signature-change impact,
-tsconfig-paths, and Python resolution are still open.
+Status: in progress. Cross-file binding, foundational symbol tools,
+repair import-graph hints, and `dependency_graph(path?)` have landed;
+`component_map`, signature-change impact, tsconfig-paths, and Python
+resolution are still open.
 
 ### Goal
 
@@ -900,8 +906,11 @@ breakage.
   - [x] `symbol_dependencies(file)` — wired through
         `tools.findSymbolDependencies` and the `symbol_dependencies`
         model tool, with `allowedTools` updated identically.
-  - [ ] `dependency_graph(path?)` — aggregator across the whole
-        workspace.
+  - [x] `dependency_graph(path?)` — aggregator across the whole
+        workspace, with optional focused path mode. Returns graph
+        nodes, resolved internal edges, external imports, and
+        summary counts; focused mode includes reachable dependencies
+        plus direct dependents that import the path.
   - [ ] `component_map()` — React component discovery.
 - [~] Pre-patch impact analysis: when the model is about to rename or change
   the signature of an exported symbol, the pre-patch plan from item 3
@@ -937,7 +946,7 @@ breakage.
 - [x] Tests with imports across folders, default vs named imports, and
   files that only mention the name without importing it
   (`test/import-resolver.test.js` — 7 tests;
-  `test/symbol-callers.test.js` — 7 tests). Re-export and dynamic-
+  `test/symbol-callers.test.js` — 9 tests). Re-export and dynamic-
   import coverage is open.
 
 ### Notes for the next agent
@@ -960,6 +969,10 @@ breakage.
   `resolveImport` from the shared module. The previous
   `resolveRelativeImport` is now a one-line delegate so existing
   callers (and their tests) keep working unchanged.
+- `dependency_graph(path?)` is intentionally file-level for now. It
+  does not understand tsconfig aliases, CommonJS `require()`,
+  dynamic imports, re-exports, or Python imports until the resolver
+  grows those capabilities.
 
 ### Definition Of Done
 
