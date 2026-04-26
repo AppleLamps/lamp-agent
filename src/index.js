@@ -42,7 +42,8 @@ async function main() {
   const tools = createToolRuntime({ cwd, config, requestApproval });
   const model = await createModelAdapter(config.model);
 
-  output.write(`${ui.banner(VERSION)}\n`);
+  const bannerStatus = buildBannerStatus(config.model);
+  output.write(`${ui.banner(VERSION, bannerStatus)}\n`);
 
   let activeTask = null;
   let activeTools = tools;
@@ -397,7 +398,15 @@ async function main() {
       await phaseController.skip("critique", "Explain-style task: no patch to critique.");
       await phaseController.skip("final_review", "Explain-style task: answered inline.");
       await updateTaskStatus(activeTask, "answered");
-      output.write(`\n${ui.assistant(response.message)}\n\n`);
+      // When streaming was clean, the user already saw the answer
+      // inline — no need to re-render it in a box. Show the box
+      // only when no streaming happened (e.g. local fallback) or
+      // when the model errored and we synthesised a fallback message.
+      if (!streamingActive || response.error) {
+        output.write(`\n${ui.assistant(response.message)}\n\n`);
+      } else {
+        output.write("\n");
+      }
       continue;
     }
 
@@ -446,7 +455,13 @@ async function main() {
     });
     await phaseController.complete("critique", { critique });
 
-    output.write(`\n${ui.assistant(response.message)}\n`);
+    // Same conditional as the explain path: if the user already saw
+    // the answer streamed inline, don't re-render it as a box. Keep
+    // the box for non-streaming paths and for error-fallback messages
+    // so the user sees the conclusive text once.
+    if (!streamingActive || response.error) {
+      output.write(`\n${ui.assistant(response.message)}\n`);
+    }
     const diffBeforeReview = await activeTools.taskDiff(activeTask);
     await phaseController.begin("final_review", {
       diff_available: Boolean(diffBeforeReview),
@@ -468,6 +483,31 @@ async function main() {
   }
 
   rl.close();
+}
+
+function buildBannerStatus(modelConfig = {}) {
+  const provider = modelConfig.provider || "openrouter";
+  const apiKeyEnv = modelConfig.apiKeyEnv || providerKeyEnv(provider);
+  const apiKeyConfigured = Boolean(apiKeyEnv && process.env[apiKeyEnv]);
+  return {
+    provider,
+    model: modelConfig.model || null,
+    allowNetwork: modelConfig.allowNetwork !== false,
+    apiKeyConfigured,
+    streaming: Boolean(modelConfig.capabilities?.streaming),
+    promptCaching: Boolean(modelConfig.promptCaching),
+    reasoning: Boolean(modelConfig.reasoning)
+  };
+}
+
+function providerKeyEnv(provider) {
+  switch (provider) {
+    case "openai": return "OPENAI_API_KEY";
+    case "anthropic": return "ANTHROPIC_API_KEY";
+    case "local": return "LAMP_LOCAL_API_KEY";
+    case "openrouter":
+    default: return "OPENROUTER_API_KEY";
+  }
 }
 
 function printHelp(ui) {
@@ -633,6 +673,9 @@ async function resumeTask({ cwd, taskId, config, model, rootTools, prompts, requ
 async function runResumeLifecycle({ activeTask, phaseController, tools, model, config, prompts, rootTools, ui, cwd, setActiveTools }) {
   const line = activeTask.task.user_request;
   let phases = await phaseController.read();
+  // Function-scoped so the post-patch explain / final-review branches
+  // can decide whether to re-render the assistant message in a box.
+  let streamingActive = false;
 
   let memoryResult = { memory: null, refreshed: false, reason: "not refreshed during resume" };
   let projectSummary = await latestEventPayload(activeTask, "project_summary", "summary");
@@ -785,7 +828,6 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
     }
 
     const priorTurns = await collectPriorAssistantTurns(activeTask);
-    let streamingActive = false;
     try {
       response = await model.respond({
         userRequest: line,
@@ -847,7 +889,11 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
     if (!phaseDone(await phaseController.read(), "critique")) await phaseController.skip("critique", "Explain-style task: no patch to critique.");
     if (!phaseDone(await phaseController.read(), "final_review")) await phaseController.skip("final_review", "Explain-style task: answered inline.");
     await updateTaskStatus(activeTask, "answered");
-    output.write(`\n${ui.assistant(response?.message || "Task resumed and completed.")}\n\n`);
+    if (!streamingActive || response?.error) {
+      output.write(`\n${ui.assistant(response?.message || "Task resumed and completed.")}\n\n`);
+    } else {
+      output.write("\n");
+    }
     return;
   }
 
@@ -906,7 +952,9 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
 
   phases = await phaseController.read();
   if (!phaseDone(phases, "final_review")) {
-    output.write(`\n${ui.assistant(response?.message || "Task resumed.")}\n`);
+    if (!streamingActive || response?.error) {
+      output.write(`\n${ui.assistant(response?.message || "Task resumed.")}\n`);
+    }
     const diffBeforeReview = await tools.taskDiff(activeTask);
     await phaseController.begin("final_review", {
       diff_available: Boolean(diffBeforeReview),

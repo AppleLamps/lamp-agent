@@ -13,14 +13,21 @@ export function createTerminalUi({ output, input = process.stdin, env = process.
   const color = Boolean(output.isTTY) && env.NO_COLOR !== "1";
 
   return {
-    banner(version) {
-      return [
+    banner(version, status = null) {
+      const lines = [
         paint(color, ANSI.bold + ANSI.cyan, `Lamp Agent ${version}`),
-        paint(color, ANSI.gray, "Plain-English coding harness"),
+        paint(color, ANSI.gray, "Plain-English coding agent")
+      ];
+      if (status) {
+        const statusLine = formatBannerStatus(status, color);
+        if (statusLine) lines.push(statusLine);
+      }
+      lines.push(
         "",
         paint(color, ANSI.dim, "Ask for code work in normal language. Use /help for commands."),
         ""
-      ].join("\n");
+      );
+      return lines.join("\n");
     },
 
     prompt() {
@@ -73,7 +80,7 @@ export function createTerminalUi({ output, input = process.stdin, env = process.
     approval(message) {
       return [
         box("approval needed", message, { color, borderColor: ANSI.yellow }),
-        "Choose: yes | no | explain"
+        "Choose: yes | no | explain | alternative | cancel"
       ].join("\n");
     },
 
@@ -100,6 +107,29 @@ export function stripAnsi(text) {
 
 function paint(enabled, code, text) {
   return enabled ? `${code}${text}${ANSI.reset}` : text;
+}
+
+function formatBannerStatus(status, color) {
+  // Render the configured provider/model and a couple of capability
+  // hints so a user knows immediately whether their setup is wired
+  // up. Missing API key is the most common first-run footgun.
+  if (!status) return "";
+  const parts = [];
+  const modelLabel = [status.provider, status.model].filter(Boolean).join(" · ");
+  if (modelLabel) parts.push(modelLabel);
+  if (status.allowNetwork === false) {
+    parts.push(paint(color, ANSI.yellow, "network disabled"));
+  } else if (status.apiKeyConfigured === false) {
+    parts.push(paint(color, ANSI.yellow, "no API key"));
+  } else {
+    const flags = [];
+    if (status.streaming) flags.push("streaming");
+    if (status.promptCaching) flags.push("prompt-cached");
+    if (status.reasoning) flags.push("reasoning");
+    if (flags.length) parts.push(flags.join(", "));
+  }
+  if (!parts.length) return "";
+  return paint(color, ANSI.dim, parts.join(" · "));
 }
 
 function maxLineLength(text) {

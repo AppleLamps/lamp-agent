@@ -32,7 +32,7 @@ test("e2e: CLI prints the banner and exits cleanly on /exit", async () => {
     await cli.sendLine("/exit");
     const result = await cli.exit();
     assert.equal(result.code, 0, "CLI should exit cleanly");
-    assert.match(cli.stdout(), /Plain-English coding harness/);
+    assert.match(cli.stdout(), /Plain-English coding agent/);
     assert.equal(cli.stderr().trim(), "", "no stderr output expected on a clean exit");
   } finally {
     cli.kill();
