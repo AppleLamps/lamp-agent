@@ -154,6 +154,54 @@ export async function findSymbolCallers({ cwd, codeIndex, symbol }) {
 }
 
 /**
+ * Synchronous, read-free version of `findSymbolCallers` that returns
+ * just the file lists (no per-line reference snippets). Suitable for
+ * blast-radius computation in pre-patch planning, where the goal is
+ * to enumerate affected files before any byte is written.
+ *
+ * Returns `null` when the symbol is not defined anywhere in the
+ * workspace, so callers can ignore prose mentions that don't refer
+ * to a real workspace symbol.
+ *
+ * @param {object} args
+ * @param {object} args.codeIndex
+ * @param {string} args.symbol
+ * @returns {{symbol, defining_files: string[], caller_files: string[]} | null}
+ */
+export function listSymbolImpact({ codeIndex, symbol }) {
+  const ident = String(symbol || "").trim();
+  if (!ident || !/^[A-Za-z_$][\w$]*$/.test(ident)) return null;
+  const definitions = codeIndex?.defsByName?.get(ident) || [];
+  const definingFiles = new Set(definitions.map((entry) => entry.file));
+  if (definingFiles.size === 0) return null;
+
+  const fileSet = new Set(codeIndex?.files || []);
+  const importsByFile = codeIndex?.imports || new Map();
+  const callerFiles = new Set();
+
+  for (const [importingFile, imports] of importsByFile) {
+    for (const importEntry of imports) {
+      const resolved = resolveImport({
+        from: importingFile,
+        source: importEntry?.source || "",
+        fileSet
+      });
+      if (!resolved || !definingFiles.has(resolved)) continue;
+      const localName = importLocalName(importEntry, ident, resolved, codeIndex);
+      if (!localName) continue;
+      callerFiles.add(importingFile);
+      break;
+    }
+  }
+
+  return {
+    symbol: ident,
+    defining_files: [...definingFiles].sort(),
+    caller_files: [...callerFiles].sort()
+  };
+}
+
+/**
  * For a given file, return its imports with each `source` resolved
  * to a workspace-relative path when possible. Bare specifiers (npm
  * packages) appear with `resolved: null`.

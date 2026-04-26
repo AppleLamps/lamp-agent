@@ -75,10 +75,10 @@ genuinely blocking finding, and the system prompt reads as "you're a
 coding assistant; here are your tools" rather than "you operate
 inside a permissioned harness".
 
-Latest verified baseline: `npm test` passes with 205 unit tests
+Latest verified baseline: `npm test` passes with 209 unit tests
 (1 skipped, 0 failing); `npm run test:e2e` runs 14 end-to-end tests
 against four fixture repositories. Latest pushed commit:
-`957efa5 Update handoff documentation` on `main`.
+`31a4878 Add cross-file symbol binding (Phase 3 item 8)` on `main`.
 
 ### Lifecycle shape
 
@@ -173,13 +173,24 @@ edit-spec from the model and persist them as `plan.json` and
   `tools.findSymbolDependencies` and as the `symbol_callers` /
   `symbol_dependencies` model tools (triage and patch `allowedTools`
   updated). `src/checks/relevant-files.js` was migrated to call the
-  shared resolver. Locked in by `test/import-resolver.test.js` (7
-  tests) and `test/symbol-callers.test.js` (7 tests). **Open**:
-  `dependency_graph` aggregator, `component_map` tool, pre-patch
-  rename / signature impact analysis, repair-loop integration that
-  hands the import graph of the failing test to `model.repair`,
-  tsconfig-paths alias resolution, and Python `from x import y`
-  resolution.
+  shared resolver. The pre-patch plan now uses a sync
+  `listSymbolImpact` helper to detect rename intent in the user
+  request (`/\brename\b/`-anchored), enumerate the symbol's defining
+  and caller files via the import graph, and surface a
+  `rename_impact` warning in the plan — blocking when the symbol has
+  cross-file callers, informational when only the definition is
+  affected. Affected files are added to
+  `expected_scope.candidate_files` so they participate in the same
+  danger-zone crosses (lockfile / manifest / secret /
+  avoid_touching) as keyword candidates. Locked in by
+  `test/import-resolver.test.js` (7 tests),
+  `test/symbol-callers.test.js` (7 tests), and 4 new rename-impact
+  tests in `test/pre-patch-plan.test.js`. **Open**:
+  `dependency_graph` aggregator, `component_map` tool, signature-
+  change impact (renames are covered; argument-list changes are
+  not), repair-loop integration that hands the import graph of the
+  failing test to `model.repair`, tsconfig-paths alias resolution,
+  and Python `from x import y` resolution.
 
 ### Bugs caught while building Phase 3
 
@@ -207,11 +218,12 @@ edit-spec from the model and persist them as `plan.json` and
    `runTaskLifecycle({...})` function so a partially-completed task
    picks up at the next not-completed phase using artifacts already
    on disk.
-2. Item 8 leftovers — pre-patch impact analysis on rename /
-   signature changes, repair-loop integration that passes the
-   import graph of the failing test into `model.repair`, the
-   `dependency_graph` aggregator, the `component_map` tool,
-   tsconfig-paths alias resolution, and Python resolution.
+2. Item 8 leftovers — repair-loop integration that passes the
+   import graph of the failing test into `model.repair`,
+   signature-change impact (rename impact is covered; argument-
+   list changes are not yet), the `dependency_graph` aggregator,
+   the `component_map` tool, tsconfig-paths alias resolution, and
+   Python resolution.
 3. Stragglers (in priority order): repair-findings wiring (item 6);
    Anthropic caching + streaming + smoke tests (item 5);
    streaming-aware `ui.assistant` (item 4); preview review action +

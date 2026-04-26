@@ -11,6 +11,8 @@
 // radius computed at review time (`src/review/review-summary.js`) is
 // the post-fact view; this module is the pre-fact view.
 
+import { listSymbolImpact } from "../code/code-index.js";
+
 const SECRET_PATH_RE = /(^|[/\\])(\.env(\..*)?|id_rsa|id_ed25519|\.npmrc|\.pypirc|credentials|secrets?)([/\\]|$)/i;
 const LOCKFILE_NAMES = new Set([
   "package-lock.json",
@@ -67,9 +69,14 @@ export function buildPrePatchPlan({
   // off that signal would force a blocking warning on every task in a
   // Node project, which is too noisy.
   const requestSignals = scanUserRequestSignals(userRequest);
+  const renameImpact = buildRenameImpact({ userRequest, codeIndex });
+  const renameAffectedFiles = renameImpact.flatMap((entry) =>
+    [...entry.defining_files, ...entry.caller_files]
+  );
   const candidates = unique([
     ...keywordCandidates(userRequest, allFiles),
     ...notableCandidates(projectSummary),
+    ...renameAffectedFiles,
     ...(requestSignals.secret ? dangerZones.secret_paths : []),
     ...(requestSignals.dependency
       ? [...dangerZones.dependency_manifests, ...dangerZones.lockfiles]
@@ -83,7 +90,8 @@ export function buildPrePatchPlan({
     dangerZones,
     candidates,
     projectMemory,
-    taskType
+    taskType,
+    renameImpact
   }).slice(0, limits.warnings);
 
   return {
@@ -92,12 +100,49 @@ export function buildPrePatchPlan({
     expected_scope: {
       candidate_files: candidates,
       risk_labels: [...riskyBoundaries],
-      predicted_checks: predictedChecks
+      predicted_checks: predictedChecks,
+      rename_impact: renameImpact
     },
     danger_zones: dangerZones,
     warnings,
     created_at: new Date().toISOString()
   };
+}
+
+const RENAME_STOPWORDS = new Set([
+  "rename", "the", "to", "and", "but", "from", "into", "with",
+  "for", "function", "method", "class", "variable", "var", "let",
+  "const", "this", "that", "these", "those", "all", "any", "every",
+  "please", "want", "need", "should", "would", "must", "make",
+  "fix", "name", "names", "called", "everywhere", "across", "through",
+  "throughout", "module", "exports", "exported", "import", "imports",
+  "imported", "type", "interface", "alias", "old", "new", "current"
+]);
+
+function scanRenameIntent(userRequest) {
+  const text = String(userRequest || "");
+  if (!/\brename\b/i.test(text)) return [];
+  const matches = text.match(/\b[A-Za-z_$][\w$]*\b/g) || [];
+  const out = new Set();
+  for (const m of matches) {
+    if (m.length < 3) continue;
+    if (RENAME_STOPWORDS.has(m.toLowerCase())) continue;
+    out.add(m);
+  }
+  return [...out];
+}
+
+function buildRenameImpact({ userRequest, codeIndex }) {
+  if (!codeIndex || !codeIndex.defsByName) return [];
+  const candidates = scanRenameIntent(userRequest);
+  if (!candidates.length) return [];
+  const out = [];
+  for (const candidate of candidates) {
+    const impact = listSymbolImpact({ codeIndex, symbol: candidate });
+    if (!impact) continue;
+    out.push(impact);
+  }
+  return out;
 }
 
 function scanUserRequestSignals(userRequest) {
@@ -198,7 +243,7 @@ function inferTaskType(userRequest) {
   return "change";
 }
 
-function buildWarnings({ userRequest, riskyBoundaries, dangerZones, candidates, projectMemory, taskType }) {
+function buildWarnings({ userRequest, riskyBoundaries, dangerZones, candidates, projectMemory, taskType, renameImpact = [] }) {
   const warnings = [];
   const lower = String(userRequest || "").toLowerCase();
   const candidateSet = new Set((candidates || []).map(normalize));
@@ -255,6 +300,33 @@ function buildWarnings({ userRequest, riskyBoundaries, dangerZones, candidates, 
       severity: "warning",
       blocking: true,
       message: `Candidate files match avoid_touching entries: ${avoidTouchingHits.join(", ")}.`
+    });
+  }
+
+  // Rename-impact: blocking when the symbol has cross-file callers, so
+  // the user sees the ripple before the patch lands. Definition-only
+  // matches (no callers) stay informational — renaming a private
+  // helper is a normal local edit.
+  for (const impact of renameImpact) {
+    const totalFiles = impact.defining_files.length + impact.caller_files.length;
+    const sample = [...impact.defining_files, ...impact.caller_files].slice(0, 5);
+    if (impact.caller_files.length === 0) {
+      warnings.push({
+        tier: "rename_impact",
+        severity: "info",
+        symbol: impact.symbol,
+        affected_files: [...impact.defining_files],
+        message: `Renaming ${impact.symbol} affects 1 file (${impact.defining_files.join(", ")}); no cross-file callers.`
+      });
+      continue;
+    }
+    warnings.push({
+      tier: "rename_impact",
+      severity: "warning",
+      blocking: true,
+      symbol: impact.symbol,
+      affected_files: [...impact.defining_files, ...impact.caller_files],
+      message: `Renaming ${impact.symbol} will affect ${totalFiles} file(s): ${sample.join(", ")}${totalFiles > sample.length ? ", …" : ""}.`
     });
   }
 

@@ -130,6 +130,122 @@ test("buildPrePatchPlan does NOT flag the schema warning for explain-style reque
   assert.ok(!tiers.includes("schema"));
 });
 
+test("buildPrePatchPlan flags rename_impact as blocking when the symbol has cross-file callers", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts", "src/api/handler.ts", "src/api/other.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map([
+      [
+        "src/api/handler.ts",
+        [{ source: "../auth/login", names: [{ kind: "named", name: "login" }], line: 1, kind: "static" }]
+      ],
+      [
+        "src/api/other.ts",
+        [{ source: "../auth/login", names: [{ kind: "named", name: "login" }], line: 1, kind: "static" }]
+      ]
+    ]),
+    exports: new Map([
+      ["src/auth/login.ts", [{ name: "login", kind: "function", line: 1 }]]
+    ])
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Rename login to authenticate everywhere",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const renameWarning = plan.warnings.find((entry) => entry.tier === "rename_impact");
+  assert.ok(renameWarning, "expected a rename_impact warning");
+  assert.equal(renameWarning.blocking, true);
+  assert.equal(renameWarning.symbol, "login");
+  assert.deepEqual(renameWarning.affected_files.sort(), [
+    "src/api/handler.ts",
+    "src/api/other.ts",
+    "src/auth/login.ts"
+  ]);
+  // The candidate set should pick up the caller files even though
+  // they don't keyword-match the request.
+  assert.ok(plan.expected_scope.candidate_files.includes("src/api/handler.ts"));
+  assert.ok(plan.expected_scope.candidate_files.includes("src/api/other.ts"));
+  // expected_scope.rename_impact records the structured form for the
+  // model and the audit log.
+  assert.equal(plan.expected_scope.rename_impact.length, 1);
+  assert.equal(plan.expected_scope.rename_impact[0].symbol, "login");
+});
+
+test("buildPrePatchPlan emits rename_impact as informational when the symbol has no callers", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map(),
+    exports: new Map([
+      ["src/auth/login.ts", [{ name: "login", kind: "function", line: 1 }]]
+    ])
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Rename login to authenticate",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const renameWarning = plan.warnings.find((entry) => entry.tier === "rename_impact");
+  assert.ok(renameWarning, "expected an informational rename_impact entry");
+  assert.notEqual(renameWarning.blocking, true);
+  assert.equal(renameWarning.severity, "info");
+});
+
+test("buildPrePatchPlan does NOT emit rename_impact when the request mentions rename but no candidate symbol matches the workspace", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map(),
+    exports: new Map()
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Rename the deprecated checkout flow",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const renameWarning = plan.warnings.find((entry) => entry.tier === "rename_impact");
+  assert.equal(renameWarning, undefined,
+    "should not flag rename_impact when no mentioned identifier resolves to a workspace symbol");
+  assert.deepEqual(plan.expected_scope.rename_impact, []);
+});
+
+test("buildPrePatchPlan does NOT emit rename_impact when the request never mentions rename", () => {
+  const codeIndex = {
+    files: ["src/auth/login.ts", "src/api/handler.ts"],
+    defsByName: new Map([
+      ["login", [{ file: "src/auth/login.ts", line: 1, kind: "function" }]]
+    ]),
+    imports: new Map([
+      [
+        "src/api/handler.ts",
+        [{ source: "../auth/login", names: [{ kind: "named", name: "login" }], line: 1, kind: "static" }]
+      ]
+    ]),
+    exports: new Map([
+      ["src/auth/login.ts", [{ name: "login", kind: "function", line: 1 }]]
+    ])
+  };
+  const plan = buildPrePatchPlan({
+    userRequest: "Fix the failing login redirect",
+    projectSummary: { notableFiles: codeIndex.files },
+    codeIndex,
+    riskyBoundaries: []
+  });
+  const renameWarning = plan.warnings.find((entry) => entry.tier === "rename_impact");
+  assert.equal(renameWarning, undefined,
+    "rename_impact only fires when the user request actually mentions 'rename'");
+});
+
 test("buildPrePatchPlan flags a secret_file blocker when candidates cross a secret path", () => {
   // Use a request whose keyword tokens include the file we want to flag.
   const plan = buildPrePatchPlan({
