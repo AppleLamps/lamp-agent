@@ -83,6 +83,7 @@ export function mapFailedTestsToSources(parsed, { codeIndex, allFiles = [], cwd 
 
   const fileSet = new Set(allFiles.map(normalize).filter(Boolean));
   const importsByFile = codeIndex?.imports || new Map();
+  const aliases = codeIndex?.tsconfigAliases || null;
 
   // For each failed test file, walk its imports.
   for (const candidate of (parsed.failed_files || []).concat(parsed.failed_tests || [])) {
@@ -98,7 +99,7 @@ export function mapFailedTestsToSources(parsed, { codeIndex, allFiles = [], cwd 
     const imports = importsByFile.get(file) || [];
     for (const importEntry of imports) {
       const source = importEntry?.source || "";
-      const resolved = resolveRelativeImport({ from: file, source, fileSet });
+      const resolved = resolveRelativeImport({ from: file, source, fileSet, aliases });
       if (resolved) recordProvenance(resolved, "import-graph");
     }
   }
@@ -141,8 +142,8 @@ function coLocatedCandidates(testFile, fileSet) {
   return matches;
 }
 
-function resolveRelativeImport({ from, source, fileSet }) {
-  return resolveImport({ from, source, fileSet });
+function resolveRelativeImport({ from, source, fileSet, aliases = null }) {
+  return resolveImport({ from, source, fileSet, aliases });
 }
 
 function priorityScore(tags) {

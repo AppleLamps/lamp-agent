@@ -132,6 +132,48 @@ test("symbol_callers handles default imports", async () => {
   }
 });
 
+test("symbol_callers traces named re-exports through a barrel module", async () => {
+  const { root, files } = await setupWorkspace({
+    "src/auth/login.ts": "export function login() { return 1; }\n",
+    "src/auth/index.ts": "export { login } from \"./login\";\n",
+    "src/api/handler.ts": [
+      "import { login } from \"../auth\";",
+      "export const x = login();",
+      ""
+    ].join("\n")
+  });
+  try {
+    const codeIndex = await buildCodeIndex({ cwd: root, files });
+    const result = await findSymbolCallers({ cwd: root, codeIndex, symbol: "login" });
+    const caller = result.callers.find((c) => c.file === "src/api/handler.ts");
+    assert.ok(caller, "barrel-imported caller should be detected via re-export traversal");
+    assert.equal(caller.local_name, "login");
+    assert.equal(caller.resolved_from, "src/auth/index.ts");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("symbol_callers traces `export *` through a barrel module", async () => {
+  const { root, files } = await setupWorkspace({
+    "src/auth/login.ts": "export function login() { return 1; }\n",
+    "src/auth/index.ts": "export * from \"./login\";\n",
+    "src/api/handler.ts": [
+      "import { login } from \"../auth\";",
+      "export const x = login();",
+      ""
+    ].join("\n")
+  });
+  try {
+    const codeIndex = await buildCodeIndex({ cwd: root, files });
+    const result = await findSymbolCallers({ cwd: root, codeIndex, symbol: "login" });
+    const caller = result.callers.find((c) => c.file === "src/api/handler.ts");
+    assert.ok(caller, "`export *` barrel should be transparent for caller tracing");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("symbol_callers ignores reference-only mentions in files that do not import the symbol", async () => {
   const { root, files } = await setupWorkspace({
     "src/auth/login.ts": "export function login() { return 1; }\n",
@@ -236,6 +278,38 @@ test("dependency_graph can focus on one file plus direct dependents", async () =
       { from: "src/page.ts", to: "src/feature.ts" }
     ]);
     assert.equal(graph.root, "src/feature.ts");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("symbol_dependencies resolves CommonJS require() and dynamic import() calls", async () => {
+  const { root, files } = await setupWorkspace({
+    "src/util.js": "module.exports = { hello: () => 'hi' };\n",
+    "src/lazy.js": "module.exports = { lazy: 1 };\n",
+    "src/config.json": "{\"flag\": true}\n",
+    "src/main.js": [
+      "const util = require(\"./util\");",
+      "const cfg = require(\"./config\");",
+      "async function load() { const m = await import(\"./lazy\"); return m; }",
+      "module.exports = { util, cfg, load };",
+      ""
+    ].join("\n")
+  });
+  try {
+    const codeIndex = await buildCodeIndex({ cwd: root, files });
+    const result = findSymbolDependencies({ codeIndex, file: "src/main.js" });
+    assert.equal(result.ok, true);
+    const utilDep = result.dependencies.find((entry) => entry.source === "./util");
+    assert.equal(utilDep.kind, "require");
+    assert.equal(utilDep.resolved, "src/util.js");
+    // `require("./config")` resolves to .json via the resource fallback.
+    const cfgDep = result.dependencies.find((entry) => entry.source === "./config");
+    assert.equal(cfgDep.kind, "require");
+    assert.equal(cfgDep.resolved, "src/config.json");
+    const lazyDep = result.dependencies.find((entry) => entry.source === "./lazy");
+    assert.equal(lazyDep.kind, "dynamic");
+    assert.equal(lazyDep.resolved, "src/lazy.js");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

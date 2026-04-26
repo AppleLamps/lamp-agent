@@ -1,9 +1,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { resolveImport } from "./import-resolver.js";
+import { resolveImport, loadTsconfigAliases } from "./import-resolver.js";
 
 const JS_TS_EXTS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"]);
 const PY_EXTS = new Set([".py"]);
+// Tracked but not parsed — surfaced so resolveImport's resource
+// fallback can resolve `require("./config")` to a workspace .json.
+const RESOURCE_EXTS = new Set([".json"]);
 
 const MAX_FILE_BYTES = 512 * 1024;
 
@@ -27,11 +30,15 @@ export async function buildCodeIndex({ cwd, files }) {
   const defsByName = new Map();
   const indexed = [];
   const skipped = [];
+  const tsconfigAliases = loadTsconfigAliases(cwd);
 
   for (const relative of files) {
     const ext = path.extname(relative).toLowerCase();
     const language = JS_TS_EXTS.has(ext) ? "js" : PY_EXTS.has(ext) ? "py" : null;
-    if (!language) continue;
+    if (!language) {
+      if (RESOURCE_EXTS.has(ext)) indexed.push(relative);
+      continue;
+    }
 
     let content;
     try {
@@ -68,7 +75,7 @@ export async function buildCodeIndex({ cwd, files }) {
     if (fileExports.length) exports_.set(relative, fileExports);
   }
 
-  return { files: indexed, symbols, imports, exports: exports_, defsByName, skipped };
+  return { files: indexed, symbols, imports, exports: exports_, defsByName, skipped, tsconfigAliases };
 }
 
 /**
@@ -96,6 +103,7 @@ export async function findSymbolCallers({ cwd, codeIndex, symbol }) {
   const definingFiles = new Set(definitions.map((entry) => entry.file));
 
   const fileSet = new Set(codeIndex?.files || []);
+  const aliases = codeIndex?.tsconfigAliases || null;
   const importsByFile = codeIndex?.imports || new Map();
   const callers = [];
 
@@ -104,7 +112,8 @@ export async function findSymbolCallers({ cwd, codeIndex, symbol }) {
       const resolved = resolveImport({
         from: importingFile,
         source: importEntry?.source || "",
-        fileSet
+        fileSet,
+        aliases
       });
       if (!resolved) continue;
 
@@ -120,8 +129,20 @@ export async function findSymbolCallers({ cwd, codeIndex, symbol }) {
       // Only files that import the symbol from one of its defining
       // files count as true callers. Without this, an exported name
       // shared by two modules (e.g. two `init` functions) would
-      // bleed across them.
-      if (definingFiles.size > 0 && !definingFiles.has(resolved)) continue;
+      // bleed across them. Barrel modules that re-export the symbol
+      // from its real definition also count: the consumer is
+      // ultimately depending on the same code.
+      if (
+        definingFiles.size > 0
+        && !resolvesToDefiningFile({
+          resolved,
+          symbol: ident,
+          definingFiles,
+          codeIndex,
+          fileSet,
+          aliases
+        })
+      ) continue;
 
       // Scan the importing file body for word-boundary matches of the
       // local name. Skip the import statement's own line.
@@ -176,6 +197,7 @@ export function listSymbolImpact({ codeIndex, symbol }) {
   if (definingFiles.size === 0) return null;
 
   const fileSet = new Set(codeIndex?.files || []);
+  const aliases = codeIndex?.tsconfigAliases || null;
   const importsByFile = codeIndex?.imports || new Map();
   const callerFiles = new Set();
 
@@ -184,9 +206,18 @@ export function listSymbolImpact({ codeIndex, symbol }) {
       const resolved = resolveImport({
         from: importingFile,
         source: importEntry?.source || "",
-        fileSet
+        fileSet,
+        aliases
       });
-      if (!resolved || !definingFiles.has(resolved)) continue;
+      if (!resolved) continue;
+      if (!resolvesToDefiningFile({
+        resolved,
+        symbol: ident,
+        definingFiles,
+        codeIndex,
+        fileSet,
+        aliases
+      })) continue;
       const localName = importLocalName(importEntry, ident, resolved, codeIndex);
       if (!localName) continue;
       callerFiles.add(importingFile);
@@ -210,12 +241,13 @@ export function findSymbolDependencies({ codeIndex, file }) {
   const norm = String(file || "").replaceAll("\\", "/");
   const imports = codeIndex?.imports?.get(norm) || [];
   const fileSet = new Set(codeIndex?.files || []);
+  const aliases = codeIndex?.tsconfigAliases || null;
   const dependencies = imports.map((entry) => ({
     source: entry.source,
     line: entry.line,
     kind: entry.kind,
     names: entry.names,
-    resolved: resolveImport({ from: norm, source: entry.source || "", fileSet })
+    resolved: resolveImport({ from: norm, source: entry.source || "", fileSet, aliases })
   }));
   const internalCount = dependencies.filter((entry) => entry.resolved).length;
   return {
@@ -236,6 +268,7 @@ export function findSymbolDependencies({ codeIndex, file }) {
  */
 export function dependencyGraph({ codeIndex, file = null } = {}) {
   const fileSet = new Set(codeIndex?.files || []);
+  const aliases = codeIndex?.tsconfigAliases || null;
   const importsByFile = codeIndex?.imports || new Map();
   const graph = new Map();
   const external = new Map();
@@ -249,7 +282,7 @@ export function dependencyGraph({ codeIndex, file = null } = {}) {
     if (!graph.has(from)) graph.set(from, new Set());
     if (!external.has(from)) external.set(from, new Set());
     for (const entry of imports || []) {
-      const resolved = resolveImport({ from, source: entry?.source || "", fileSet });
+      const resolved = resolveImport({ from, source: entry?.source || "", fileSet, aliases });
       if (resolved) {
         graph.get(from).add(resolved);
       } else if (entry?.source) {
@@ -296,6 +329,7 @@ export function dependencyGraph({ codeIndex, file = null } = {}) {
  */
 export async function detectComponents({ cwd, codeIndex }) {
   const fileSet = new Set(codeIndex?.files || []);
+  const aliases = codeIndex?.tsconfigAliases || null;
   const importsByFile = codeIndex?.imports || new Map();
   const components = [];
   const tagsByComponent = new Map();
@@ -306,7 +340,7 @@ export async function detectComponents({ cwd, codeIndex }) {
     if (!lines.length) continue;
 
     const fileComponents = findComponentsInLines(lines, file);
-    const importMap = componentImportMap(importsByFile.get(file) || [], file, fileSet);
+    const importMap = componentImportMap(importsByFile.get(file) || [], file, fileSet, aliases);
     const localNames = new Set(fileComponents.map((component) => component.name));
 
     for (let index = 0; index < fileComponents.length; index += 1) {
@@ -329,7 +363,7 @@ export async function detectComponents({ cwd, codeIndex }) {
   const componentByFileAndName = new Map(components.map((component) => [`${component.file}\0${component.name}`, component]));
   const edges = [];
   for (const component of components) {
-    const importMap = componentImportMap(importsByFile.get(component.file) || [], component.file, fileSet);
+    const importMap = componentImportMap(importsByFile.get(component.file) || [], component.file, fileSet, aliases);
     for (const tag of tagsByComponent.get(component.id) || []) {
       let target = componentByFileAndName.get(`${component.file}\0${tag}`);
       let via = "local";
@@ -450,10 +484,10 @@ function findComponentsInLines(lines, file) {
   return components;
 }
 
-function componentImportMap(imports, from, fileSet) {
+function componentImportMap(imports, from, fileSet, aliases = null) {
   const map = new Map();
   for (const entry of imports || []) {
-    const resolved = resolveImport({ from, source: entry?.source || "", fileSet });
+    const resolved = resolveImport({ from, source: entry?.source || "", fileSet, aliases });
     if (!resolved) continue;
     for (const name of entry.names || []) {
       if (!name?.name || !/^[A-Z]/.test(name.name)) continue;
@@ -473,6 +507,53 @@ function findJsxTags(lines) {
     }
   }
   return [...tags].sort();
+}
+
+/**
+ * Walk re-export chains to see whether `resolved` ultimately leads
+ * back to one of the `definingFiles` for `symbol`. Handles barrel
+ * modules that do `export { foo } from "./real"` or
+ * `export * from "./real"`. Aliased re-exports
+ * (`export { foo as bar } from "..."`) are intentionally not
+ * traced — the parser drops the original name, so we'd need a
+ * separate parser hook to support them.
+ */
+function resolvesToDefiningFile({
+  resolved,
+  symbol,
+  definingFiles,
+  codeIndex,
+  fileSet,
+  aliases,
+  depth = 8,
+  visited = new Set()
+}) {
+  if (definingFiles.has(resolved)) return true;
+  if (depth <= 0 || visited.has(resolved)) return false;
+  visited.add(resolved);
+  const exports = codeIndex?.exports?.get(resolved) || [];
+  for (const exp of exports) {
+    if (exp?.kind !== "re-export" || !exp?.source) continue;
+    if (exp.name !== "*" && exp.name !== symbol) continue;
+    const nextResolved = resolveImport({
+      from: resolved,
+      source: exp.source,
+      fileSet,
+      aliases
+    });
+    if (!nextResolved) continue;
+    if (resolvesToDefiningFile({
+      resolved: nextResolved,
+      symbol,
+      definingFiles,
+      codeIndex,
+      fileSet,
+      aliases,
+      depth: depth - 1,
+      visited
+    })) return true;
+  }
+  return false;
 }
 
 function importLocalName(importEntry, exportedName, resolvedFile, codeIndex) {

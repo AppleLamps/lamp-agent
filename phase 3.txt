@@ -13,24 +13,49 @@ the sub-bullets. The high-level checklist immediately below mirrors that.
 
 ## Resume Point For The Next Agent
 
-- **Latest completed slice:** signature-change impact in the
-  pre-patch planner.
-- **Test baseline:** `npm test` → 220 tests pass (0 skipped, 0
+- **Latest completed slice:** item 8 resolver gaps closed —
+  tsconfig path aliases, Python imports, re-export traversal,
+  CommonJS / dynamic-import coverage, `.json` resource fallback.
+- **Test baseline:** `npm test` → 236 tests pass (0 skipped, 0
   failing); `npm run test:e2e` → 15 e2e tests pass.
 - **Last two slices in order:**
-  1. `component_map()` — `src/code/code-index.js` detects common
-     React function/class/arrow component declarations and links JSX
-     tags to local/imported components; runtime/model tools and phase
-     allowed-tools expose it.
-  2. Signature-change impact — `buildPrePatchPlan` scans for
+  1. Signature-change impact — `buildPrePatchPlan` scans for
      parameter / argument / signature / return-shape requests, stores
      `expected_scope.signature_impact`, adds affected definitions and
      callers to candidate files, and emits `signature_impact`
      warnings before patching.
+  2. Item 8 resolver gaps — `loadTsconfigAliases` reads
+     tsconfig.json / jsconfig.json (comment-tolerant), exposes
+     `compilerOptions.paths` + `baseUrl`, threaded through every
+     `resolveImport` caller via `codeIndex.tsconfigAliases`.
+     `resolveImport` now routes `.py` importing files to a Python
+     branch (relative dots, package `__init__.py`, `.py` modules).
+     `findSymbolCallers` and `listSymbolImpact` walk re-export
+     chains so `export { foo } from "./real"` and `export *`
+     barrels are transparent. A `.json` fallback resolves
+     `require("./config")` against `src/config.json` when no JS/TS
+     sibling exists (`buildCodeIndex` now tracks `.json` files in
+     `codeIndex.files` so the fallback can find them).
 
-- **Recommended next slice:** the remaining item 8 resolver gaps:
-  tsconfig-paths, CommonJS/re-export/dynamic-import coverage, and
-  Python imports.
+- **Recommended next slice:** the highest-leverage straggler is
+  **repair-findings wiring (item 6 leftover)**.
+  `REPAIR_FINDINGS_SCHEMA` is already defined in
+  `src/model/structured-output.js`. The plan: add a
+  `requestStructuredRepair({ adapter, system, user })` helper that
+  parallels `requestStructuredPlan` / `requestStructuredEditSpec`,
+  wire it into `verifyAndRepair` so the model's repair findings
+  come back as a validated structure, persist as
+  `repair-findings.json` under the task dir, and surface on the
+  review card alongside the existing critique. Tests should sit
+  beside the existing structured-output tests.
+
+  Other open work (lower priority): aliased re-export tracing
+  (`export { foo as bar } from "..."` — the parser currently
+  drops the original name; needs a small parseJsLike change to
+  store both `name` and `original` on re-export entries),
+  Anthropic prompt caching + streaming, streaming-aware
+  `ui.assistant`, "preview" review action, pytest JUnit / ESLint
+  structured wiring, items 9 (LSP) and 10 (GitHub/CI).
 
 Current status:
 
@@ -280,13 +305,21 @@ exact `[x]` / `[~]` / `[ ]` state. Items 9–10 are not yet started.
 
 Recommended next steps in priority order:
 
-1. Remaining item 8 leftovers: tsconfig-paths alias resolution
-   (extend `src/code/import-resolver.js`), Python
-   `from x import y` resolution, and re-export / dynamic-import
-   coverage tests.
-2. Item 6 leftover: wire `repair_findings` (schema is defined in
-   `src/model/structured-output.js`) into `verifyAndRepair` and
-   the review surface.
+1. **Repair-findings wiring (item 6 leftover).** This is the
+   recommended next slice. `REPAIR_FINDINGS_SCHEMA` is already
+   defined in `src/model/structured-output.js`; add a
+   `requestStructuredRepair` helper that parallels
+   `requestStructuredPlan` / `requestStructuredEditSpec`, call
+   it from `verifyAndRepair`, persist the validated payload as
+   `repair-findings.json` under the task dir, and surface the
+   findings on the review card alongside the existing critique.
+2. Remaining item 8 leftover: aliased re-export tracing
+   (`export { foo as bar } from "..."`). The parser
+   (`parseJsLike` in `src/code/code-index.js`, around the
+   `export\s+\{...\}\s*from` branch) currently records the
+   exposed name only; it needs to also store the original. Then
+   `resolvesToDefiningFile` should match either name when
+   walking re-exports.
 3. Item 5 leftovers: Anthropic prompt caching
    (`anthropic-beta: prompt-caching-2024-07-31`), Anthropic
    streaming inside `respond`/`repair`, live-network smoke test.
@@ -865,8 +898,13 @@ finished.
 
 Status: in progress. Cross-file binding, foundational symbol tools,
 repair import-graph hints, `dependency_graph(path?)`,
-`component_map()`, and signature-change impact have landed;
-tsconfig-paths and Python resolution are still open.
+`component_map()`, signature-change impact, tsconfig path aliases,
+Python imports, re-export traversal, and CommonJS / dynamic-import /
+`.json` coverage have all landed. The only remaining open piece in
+this item is aliased re-export tracing
+(`export { foo as bar } from "..."`) which needs a small
+`parseJsLike` change to preserve the original name on re-export
+entries.
 
 ### Goal
 
@@ -895,10 +933,40 @@ breakage.
   - [x] `findSymbolDependencies` returns a file's imports with each
         source resolved (or null for bare specifiers), plus
         `internal_count` / `external_count` summary counts.
-  - [ ] tsconfig-paths / `paths` alias resolution.
-  - [ ] CommonJS `require()` argument resolution.
-  - [ ] Python `from x import y` resolution against the package
-        layout.
+  - [x] tsconfig-paths / `paths` alias resolution.
+        `loadTsconfigAliases(cwd)` reads `tsconfig.json` /
+        `jsconfig.json` (with comment- and trailing-comma-tolerant
+        JSON parsing), extracts `compilerOptions.paths` anchored at
+        `compilerOptions.baseUrl`, and exposes the patterns as
+        `aliases.patterns` for `applyTsconfigAlias`.
+        `buildCodeIndex` invokes the loader once and stashes the
+        result on `codeIndex.tsconfigAliases`; every call site
+        (`findSymbolCallers`, `listSymbolImpact`,
+        `findSymbolDependencies`, `dependencyGraph`,
+        `componentImportMap`, `relevant-files.js`) now passes the
+        aliases through to `resolveImport`. Wildcard (`@/*`) and
+        exact-match (`lib`) patterns both work; multiple templates
+        are tried in order.
+  - [x] CommonJS `require()` argument resolution. The parser
+        already captures `require("./foo")` calls as
+        `kind: "require"` import entries; the resolver's relative
+        path code handles them transparently. A new `.json`
+        resource fallback resolves `require("./config")` to a
+        workspace `config.json` when no JS/TS sibling exists, and
+        `buildCodeIndex` now tracks `.json` files in
+        `codeIndex.files` so the fallback can find them.
+  - [x] Python `from x import y` resolution against the package
+        layout. `resolveImport` routes `.py` importing files
+        through `resolvePythonImport`, which honors leading-dot
+        relative imports (`.foo`, `..foo`), absolute dotted
+        modules (`src.auth.login`), and prefers package
+        `__init__.py` over a same-named `.py` module.
+  - [x] Re-export traversal. `findSymbolCallers` and
+        `listSymbolImpact` walk `export { foo } from "./real"` and
+        `export *` chains so barrel modules are transparent for
+        caller tracing. Aliased re-exports
+        (`export { foo as bar } from "..."`) remain open — the
+        parser drops the original name.
 - [~] New tools:
   - [x] `symbol_callers(name)` — wired through
         `tools.findSymbolCallers` and the `symbol_callers` model
@@ -955,13 +1023,20 @@ breakage.
   `test/repair-loop.test.js`.
 - [x] Tests with imports across folders, default vs named imports, and
   files that only mention the name without importing it
-  (`test/import-resolver.test.js` — 7 tests;
-  `test/symbol-callers.test.js` — 9 tests). Component-map tests in
+  (`test/import-resolver.test.js` — 18 tests;
+  `test/symbol-callers.test.js` — 12 tests). Component-map tests in
   `test/code-index.test.js` cover React component discovery, render
   edges, and runtime exposure. Signature-impact tests in
   `test/pre-patch-plan.test.js` cover blocking cross-file callers,
   informational local-only impact, unmatched symbols, and non-
-  signature requests. Re-export and dynamic-import coverage is open.
+  signature requests. Resolver tests cover tsconfig path aliases
+  (wildcard + exact, baseUrl anchoring, JSON-with-comments parse),
+  Python absolute / relative / package-precedence imports,
+  re-export traversal (`export { x } from "..."` and
+  `export *`), and the `.json` resource fallback. Symbol-callers
+  tests cover named re-exports and `export *` barrels plus
+  CommonJS require, dynamic import, and the .json resource path.
+  Aliased re-export coverage is open.
 
 ### Notes for the next agent
 
@@ -983,10 +1058,13 @@ breakage.
   `resolveImport` from the shared module. The previous
   `resolveRelativeImport` is now a one-line delegate so existing
   callers (and their tests) keep working unchanged.
-- `dependency_graph(path?)` is intentionally file-level for now. It
-  does not understand tsconfig aliases, CommonJS `require()`,
-  dynamic imports, re-exports, or Python imports until the resolver
-  grows those capabilities.
+- `dependency_graph(path?)` is file-level. Edges flow through the
+  shared resolver, so it now traces relative imports, tsconfig
+  path aliases, CommonJS `require()`, dynamic `import()`, the
+  `.json` resource fallback, and Python imports. Re-export chains
+  are followed by `findSymbolCallers` / `listSymbolImpact` (caller
+  tracing), but the dependency graph itself does not flatten
+  re-exports — each barrel still appears as its own node.
 - `component_map()` is best-effort and regex-based. It does not parse
   anonymous default exports, HOC chains beyond simple `memo` /
   `forwardRef`, polymorphic lower-case components, or exact JSX

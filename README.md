@@ -67,14 +67,16 @@ this symbol?", "which workspace files does this file depend on?",
 "which React components render this component?") through the regex
 code-intelligence layer.
 
-Most recent change is signature-change impact in the pre-patch
-planner. Requests that mention parameter, argument, signature, or
-return-shape changes now reuse the import graph to populate
-`expected_scope.signature_impact`, add affected definition/caller
-files to candidate scope, and emit a `signature_impact` warning
-before patching.
+Most recent change closes the item-8 resolver gaps: tsconfig path
+aliases (`compilerOptions.paths` + `baseUrl` loaded from
+`tsconfig.json` / `jsconfig.json`), Python `from x.y import z`
+resolution against the workspace (relative dots, package
+`__init__.py`, `.py` modules), re-export traversal so barrel
+modules (`export { foo } from "./real"` / `export *`) are
+transparent to caller tracing, and a `.json` resource fallback so
+`require("./config")` resolves to a workspace `config.json`.
 
-Latest verified baseline: `npm test` passes with 220 tests
+Latest verified baseline: `npm test` passes with 236 tests
 (0 skipped, 0 failing); `npm run test:e2e` runs 15 end-to-end tests
 with 15 passing.
 
@@ -184,9 +186,17 @@ edit-spec from the model and persist them as `plan.json` and
   affected. Affected files are added to
   `expected_scope.candidate_files` so they participate in the same
   danger-zone crosses (lockfile / manifest / secret /
-  avoid_touching) as keyword candidates. Locked in by
-  `test/import-resolver.test.js` (7 tests),
-  `test/symbol-callers.test.js` (9 tests), and 4 new rename-impact
+  avoid_touching) as keyword candidates. The resolver also handles
+  tsconfig / jsconfig path aliases (`compilerOptions.paths` +
+  `baseUrl`, comment- and trailing-comma-tolerant JSON parsing via
+  `loadTsconfigAliases`), Python `from x.y import z` against the
+  workspace (relative dot-prefixes, package `__init__.py`, `.py`
+  modules), re-export traversal so `export { foo } from "./real"`
+  and `export *` barrels are transparent for caller tracing, and a
+  `.json` resource fallback so `require("./config")` resolves to a
+  workspace `config.json` when no JS/TS sibling exists. Locked in
+  by `test/import-resolver.test.js` (18 tests),
+  `test/symbol-callers.test.js` (12 tests), and 4 new rename-impact
   tests in `test/pre-patch-plan.test.js`. The repair loop now
   passes `summarizeFailureForRepair` the runtime code index and
   attaches each failed test file's resolved internal imports as
@@ -199,8 +209,9 @@ edit-spec from the model and persist them as `plan.json` and
   edges between local and imported components. Signature-change impact
   now detects parameter / argument / return-shape requests, records
   `expected_scope.signature_impact`, and blocks before patch when the
-  target symbol has cross-file callers. **Open**: tsconfig-paths
-  alias resolution and Python `from x import y` resolution.
+  target symbol has cross-file callers. **Open**: aliased re-export
+  tracing (`export { foo as bar } from "..."` — needs a parser hook
+  to preserve the original name).
 
 ### Bugs caught while building Phase 3
 
@@ -218,7 +229,25 @@ edit-spec from the model and persist them as `plan.json` and
 - Phase 2 roadmap items are complete.
 - Phase 3 items 1–8 are in flight (see per-item status above and
   `phase 3.txt`); items 9–10 are not started.
-- Most recent slice: **signature-change impact**. `buildPrePatchPlan`
+- Most recent slice: **item-8 resolver gaps**. `loadTsconfigAliases`
+  reads `tsconfig.json` / `jsconfig.json` (with comment + trailing-
+  comma tolerance) and exposes `compilerOptions.paths` as a
+  pattern table that `resolveImport` consults when a non-relative
+  source doesn't start with `/`. `buildCodeIndex` runs that loader
+  once and stashes the result on `codeIndex.tsconfigAliases`; every
+  call site (`findSymbolCallers`, `listSymbolImpact`,
+  `findSymbolDependencies`, `dependencyGraph`, `componentImportMap`,
+  `relevant-files.js`) now passes the aliases through. The
+  resolver also routes `.py` importing files into a Python branch
+  that handles `from src.auth import login`, relative dot-prefixes
+  (`.`/`..`), and `__init__.py`/`.py` precedence. `findSymbolCallers`
+  and `listSymbolImpact` walk re-export chains so
+  `export { foo } from "./real"` and `export *` barrels are
+  transparent for caller tracing. A `.json` resource fallback
+  resolves `require("./config")` to `src/config.json` when no JS/TS
+  sibling exists, and `buildCodeIndex` now tracks `.json` files in
+  `codeIndex.files` so the fallback can find them.
+- Slice before that: **signature-change impact**. `buildPrePatchPlan`
   scans user requests for parameter / argument / signature /
   return-shape changes, resolves mentioned symbols through
   `listSymbolImpact`, adds definition and caller files to
@@ -226,7 +255,7 @@ edit-spec from the model and persist them as `plan.json` and
   `expected_scope.signature_impact`, and emits a `signature_impact`
   warning before patching. Cross-file caller impact is blocking;
   definition-only impact is informational.
-- Slice before that: **React component map tool**. `component_map()`
+- Earlier slice: **React component map tool**. `component_map()`
   is wired through `src/code/code-index.js`, `src/tools/runtime.js`,
   `src/model/openrouter.js`, phase-controller allowed tools, and the
   e2e stub adapter. It returns regex-based React component
@@ -262,20 +291,23 @@ edit-spec from the model and persist them as `plan.json` and
 - `.agent/` is runtime state and is gitignored. Project memory and
   task artifacts can be regenerated by the harness.
 
-### Next slice — remaining item 8 resolver gaps
+### Next slice — pick the highest-leverage straggler
 
-1. Item 8 leftovers:
-   tsconfig-paths alias resolution (extend
-   `src/code/import-resolver.js` with a
-   `resolveTsconfigPaths` step that reads `tsconfig.json` and
-   applies `compilerOptions.paths`), and Python `from x import y`
-   resolution against the package layout. CommonJS `require()`,
-   re-export, and dynamic-import coverage remain resolver/test gaps.
-3. Stragglers (in priority order):
-   - Repair-findings wiring (item 6) — `REPAIR_FINDINGS_SCHEMA` is
-     defined in `src/model/structured-output.js`; wire
-     `requestStructuredRepair` into `verifyAndRepair` and surface
-     the result on the review card.
+Item 8 resolver work is closed for the planned scope. The
+recommended next slice is one of the stragglers below. The
+highest leverage one is **repair-findings wiring (item 6)**:
+`REPAIR_FINDINGS_SCHEMA` is already defined in
+`src/model/structured-output.js`; the missing piece is a
+`requestStructuredRepair` helper called from `verifyAndRepair`
+that asks the model for the schema-shaped findings, validates,
+persists `repair-findings.json` under the task dir, and surfaces
+the results on the review card alongside the existing critique.
+Tests should sit beside the existing structured-plan and
+structured-edit-spec tests.
+
+Alternative slices (any of these are reasonable to take next):
+
+1. Stragglers (in priority order):
    - Anthropic prompt caching (`anthropic-beta:
      prompt-caching-2024-07-31`), Anthropic streaming inside
      `respond`/`repair`, and a live-network smoke test (item 5).
