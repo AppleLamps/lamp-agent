@@ -6,6 +6,8 @@ import path from "node:path";
 import { copyFixture } from "./helpers/copy-fixture.js";
 import { spawnCli } from "./helpers/cli-driver.js";
 import { STUB_ADAPTER_PATH, writeStubScript } from "./helpers/stub-script.js";
+import { createTask, updateTaskStatus } from "../../src/task/task-manager.js";
+import { initializePhaseController } from "../../src/task/phase-controller.js";
 
 // Detect whether `python -m pytest --version` is available so the pytest
 // fixture test can skip cleanly on machines without it.
@@ -707,6 +709,98 @@ test("e2e: /tasks lists recent tasks and /show prints details", async () => {
   } finally {
     cli.kill();
     await fixture.cleanup();
+  }
+});
+
+test("e2e: /resume continues a planned task at the patch phase", async () => {
+  const fixture = await copyFixture("non-git-plain");
+  const stub = await writeStubScript({
+    respond: {
+      message: "Resumed task created the file.",
+      taskPatch: { assumptions: ["resume test"] },
+      steps: [{
+        tool: "create_file",
+        args: { path: "resumed.txt", content: "created during resume\n" }
+      }]
+    },
+    critique: {
+      ok: true,
+      message: "Stub critique ok.",
+      structured: {
+        status: "ok",
+        summary: "No issues found.",
+        findings: []
+      }
+    }
+  });
+
+  let cli;
+  try {
+    const activeTask = await createTask(fixture.cwd, "Create resumed file");
+    const controller = await initializePhaseController(activeTask);
+    await controller.begin("triage");
+    const projectSummary = {
+      framework: null,
+      packageManager: null,
+      scripts: [],
+      notableFiles: ["notes.md", "data/items.txt"],
+      routes: [],
+      memory: {}
+    };
+    await controller.complete("triage", { project_summary: projectSummary });
+    await controller.begin("plan");
+    const currentPlan = ["Resume from plan", "Create the requested file"];
+    const prePatchPlan = {
+      task_type: "build",
+      expected_scope: {
+        candidate_files: ["resumed.txt"],
+        risk_labels: [],
+        predicted_checks: []
+      },
+      danger_zones: {
+        avoid_touching: [],
+        secret_paths: [],
+        lockfiles: [],
+        dependency_manifests: []
+      },
+      warnings: []
+    };
+    await writeFile(path.join(activeTask.dir, "pre-patch-plan.json"), `${JSON.stringify(prePatchPlan, null, 2)}\n`);
+    await updateTaskStatus(activeTask, "planning", {
+      current_plan: currentPlan,
+      risky_boundaries: []
+    });
+    await controller.complete("plan", {
+      current_plan: currentPlan,
+      risky_boundaries: [],
+      pre_patch_plan: prePatchPlan
+    });
+
+    cli = spawnCli({
+      cwd: fixture.cwd,
+      env: {
+        LAMP_MODEL_ADAPTER: STUB_ADAPTER_PATH,
+        LAMP_STUB_SCRIPT: stub.path
+      }
+    });
+    await cli.expect(/Lamp Agent/);
+    await cli.sendLine(`/resume ${activeTask.id}`);
+    await cli.expect(new RegExp(`Resuming ${activeTask.id.replace(/-/g, "\\-")}`));
+    await cli.expect(/review/, { timeout: 60000 });
+    await cli.sendLine("/exit");
+    const result = await cli.exit();
+    assert.equal(result.code, 0);
+
+    const resumedFile = await readFile(path.join(fixture.cwd, "resumed.txt"), "utf8");
+    assert.equal(resumedFile, "created during resume\n");
+    const task = JSON.parse(await readFile(path.join(activeTask.dir, "task.json"), "utf8"));
+    assert.equal(task.status, "ready_to_review");
+    const phases = JSON.parse(await readFile(path.join(activeTask.dir, "phases.json"), "utf8"));
+    assert.equal(phases.patch?.state, "completed");
+    assert.equal(phases.final_review?.state, "completed");
+  } finally {
+    cli?.kill();
+    await Promise.all([fixture.cleanup(), stub.cleanup()]);
   }
 });
 

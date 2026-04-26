@@ -50,6 +50,12 @@ export async function createTask(cwd, userRequest) {
   return { id, dir, task };
 }
 
+export async function loadTask(cwd, taskId) {
+  const dir = path.join(cwd, ".agent", "tasks", taskId);
+  const task = JSON.parse(await readFile(path.join(dir, "task.json"), "utf8"));
+  return { id: task.id || taskId, dir, task };
+}
+
 export async function updateTaskStatus(activeTask, status, patch = {}) {
   const taskPath = path.join(activeTask.dir, "task.json");
   const task = JSON.parse(await readFile(taskPath, "utf8"));

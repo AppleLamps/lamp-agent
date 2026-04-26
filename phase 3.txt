@@ -13,24 +13,22 @@ the sub-bullets. The high-level checklist immediately below mirrors that.
 
 ## Resume Point For The Next Agent
 
-- **Latest completed slice:** repair-loop import graph integration.
-- **Test baseline:** `npm test` → 211 unit tests pass (0 skipped, 0
-  failing); `npm run test:e2e` → 14 e2e tests pass.
+- **Latest completed slice:** `/resume <task-id>` for artifact-backed
+  task continuation.
+- **Test baseline:** `npm test` → 212 tests pass (0 skipped, 0
+  failing); `npm run test:e2e` → 15 e2e tests pass.
 - **Last two slices in order:**
-  1. `d0549fe` Rename impact in the pre-patch plan — sync
-     `listSymbolImpact` walks the import graph; the plan adds
-     affected files to `expected_scope.candidate_files` and emits
-     a `rename_impact` warning (blocking when there are
-     cross-file callers).
-  2. Repair-loop import graph integration — `summarizeFailureForRepair`
+  1. Repair-loop import graph integration — `summarizeFailureForRepair`
      accepts `{ codeIndex }`, attaches failed test files' resolved
      internal imports as `import_graph`, and `verifyAndRepair`
      threads the runtime code index into the `model.repair` payload.
+  2. `/resume <task-id>` — the CLI loads a recorded task, reconstructs
+     its phase controller, rejects non-resumable tasks, records a
+     `task_resumed` event, and continues at the next incomplete phase.
 
-- **Recommended next slice:** `/resume <task-id>` (item 7 leftover —
-  needs the main-loop refactor into `runTaskLifecycle({...})`), then
-  the rest of item 8 (signature-change impact, `dependency_graph`,
-  `component_map`, tsconfig-paths, Python imports).
+- **Recommended next slice:** the rest of item 8: signature-change
+  impact, `dependency_graph`, `component_map`, tsconfig-paths, and
+  Python imports.
 
 Current status:
 
@@ -40,7 +38,7 @@ Current status:
   (non-git plain, Node passing, Node failing, pytest failing), pluggable
   model adapter factory (`src/model/index.js`) plus a stub adapter and
   script helper (`test/e2e/helpers/stub-adapter.js`, `stub-script.js`),
-  and 14 e2e tests covering banner+exit, full lifecycle, failing-verify
+  and 15 e2e tests covering banner+exit, full lifecycle, failing-verify
   path, non-git workspace, destructive command block, malformed patch
   reject, stub-driven file create with verify, dependency-change approval
   (denied), secret-file approval (denied), external-publish (push)
@@ -151,8 +149,8 @@ Current status:
   each, and on routine no-risk tasks they were not load-bearing.
   Still TBD: a structured repair-findings flow (the schema is
   defined; the wiring is not), and live-network smoke tests.
-- [~] Resumable tasks and cancel-in-flight (item 7) — most pieces
-  except `/resume` itself land this round. Phase controller gained
+- [x] Resumable tasks and cancel-in-flight (item 7) — complete for
+  artifact-backed resume. Phase controller gained
   `markCancelled` and `markInterrupted` helpers; `cancelTask`
   flips the in-progress phase to `cancelled` (or `interrupted` for
   Ctrl-C) before flipping the task status. A SIGINT handler in
@@ -161,10 +159,10 @@ Current status:
   status, last phase, resumable flag) and `/show <task-id>` (full
   task summary). Approval denials with "another approach" now
   append a `constraint`-typed belief so the model sees the
-  boundary on its next iteration. Still TBD: a full `/resume
-  <task-id>` (requires extracting the task lifecycle into a
-  function so a partially-completed task can pick up at the next
-  not-completed phase).
+  boundary on its next iteration. `/resume <task-id>` now loads a
+  recorded task and continues at the next incomplete phase using
+  persisted task artifacts. Remaining limitation: it does not
+  resurrect a deleted temp shadow workspace after a process restart.
 - [~] Dependency-aware edits and cross-file binding (item 8) — three
   slices land (cross-file binding, rename impact, repair import graph).
   `src/code/import-resolver.js` is the new shared resolver: relative-import sources resolve against the workspace
@@ -200,8 +198,8 @@ Current status:
 
 Where we are now:
 
-- Latest verified baseline: `npm test` passes with 211 unit tests
-  (0 skipped, 0 failing). `npm run test:e2e` runs 14 end-to-end
+- Latest verified baseline: `npm test` passes with 212 tests
+  (0 skipped, 0 failing). `npm run test:e2e` runs 15 end-to-end
   tests against four fixture repositories.
 - The Phase 2 baseline (seven-phase lifecycle, structured task
   artifacts, snapshot-based undo, shadow workspace, regex
@@ -270,14 +268,7 @@ exact `[x]` / `[~]` / `[ ]` state. Items 9–10 are not yet started.
 
 Recommended next steps in priority order:
 
-1. Item 7 leftover: implement `/resume <task-id>`. Requires
-   extracting the main-loop body in `src/index.js` into a
-   `runTaskLifecycle({...})` function so a partially-completed
-   task picks up at the next not-completed phase using artifacts
-   already on disk. Phase controller is ready —
-   `validateCanBegin` already accepts both `completed` and
-   `skipped` predecessors, so no controller changes are needed.
-2. Remaining item 8 leftovers: signature-change impact
+1. Remaining item 8 leftovers: signature-change impact
    (parameter list / return type rewrites — distinct from
    rename, requires the model's edit-spec or a pre-edit AST
    diff), the `dependency_graph(path?)` aggregator, the
@@ -285,20 +276,20 @@ Recommended next steps in priority order:
    resolution (extend `src/code/import-resolver.js`), Python
    `from x import y` resolution, and re-export / dynamic-import
    coverage tests.
-3. Item 6 leftover: wire `repair_findings` (schema is defined in
+2. Item 6 leftover: wire `repair_findings` (schema is defined in
    `src/model/structured-output.js`) into `verifyAndRepair` and
    the review surface.
-4. Item 5 leftovers: Anthropic prompt caching
+3. Item 5 leftovers: Anthropic prompt caching
    (`anthropic-beta: prompt-caching-2024-07-31`), Anthropic
    streaming inside `respond`/`repair`, live-network smoke test.
-5. Item 4 leftover: streaming-aware `ui.assistant`, streaming
+4. Item 4 leftover: streaming-aware `ui.assistant`, streaming
    the repair loop's model calls.
-6. Item 3 leftover: a "preview" review action that shows the next
+5. Item 3 leftover: a "preview" review action that shows the next
    staged patch before apply.
-7. Item 2 stragglers: pytest JUnit wiring (needs tmp-file
+6. Item 2 stragglers: pytest JUnit wiring (needs tmp-file
    capture, since pytest doesn't write JUnit to stdout) and
    ESLint structured wiring.
-8. Items 9 (real LSP integration) and 10 (GitHub/CI integration)
+7. Items 9 (real LSP integration) and 10 (GitHub/CI integration)
    are sized as their own future rounds.
 
 ---
@@ -807,10 +798,9 @@ without ad-hoc string parsing.
 
 ## 7. Resumable Tasks And Cancel-In-Flight
 
-Status: in progress. Cancellation, Ctrl-C, listing, and the
-alternate-approach belief land this round. Full `/resume <task-id>`
-is still pending — it needs the lifecycle refactor that lets a
-partially-completed task pick up at the next non-completed phase.
+Status: complete for artifact-backed resume. Cancellation, Ctrl-C,
+listing, alternate-approach beliefs, and `/resume <task-id>` are in
+place.
 
 ### Goal
 
@@ -819,11 +809,10 @@ mid-flight without leaving the harness in an inconsistent state.
 
 ### Add
 
-- [ ] Resume: a `/resume <task-id>` command that loads `phases.json`,
-  decides the next phase, and continues. Deferred: requires
-  extracting the lifecycle in `src/index.js` into a function so the
-  resume path can begin from any not-completed phase using the
-  artifacts already on disk.
+- [x] Resume: a `/resume <task-id>` command loads `task.json` and
+  `phases.json`, rejects non-resumable tasks, records
+  `task_resumed`, and continues at the next not-completed phase
+  using artifacts already on disk.
 - [x] Cancel-in-flight: `cancel task` aborts the active model
   request via `AbortController` (item 4), and now also marks the
   active phase `cancelled` and writes a `phase_cancelled` event.
@@ -850,16 +839,11 @@ mid-flight without leaving the harness in an inconsistent state.
 
 ### Notes for the next agent
 
-- `/resume <task-id>` is the remaining big piece. Recommended
-  approach: extract the body of the main loop in
-  `src/index.js` (from `Understanding the project` through the
-  review-action handler) into a `runTaskLifecycle({...})`
-  function. The function reads `phases.json` to know which phase
-  to begin with; new tasks start at `triage`, resumed tasks
-  jump to the next not-completed phase. For phases whose inputs
-  aren't already on disk (e.g. patch's `response` object), the
-  simplest thing is to re-run from the latest artifact-backed
-  phase rather than try to reconstruct intermediate state.
+- `/resume <task-id>` intentionally resumes from persisted
+  artifacts and reconstructs missing in-memory context when needed.
+  It does not try to resurrect a temp shadow workspace after process
+  restart; a future hardening slice could persist enough shadow
+  metadata to make that possible.
 
 ### Definition Of Done
 
@@ -1100,7 +1084,7 @@ Fix the failing build and open a PR
 
 The agent should:
 
-- [ ] resume the task safely if the user restarts the CLI mid-flight
+- [x] resume the task safely if the user restarts the CLI mid-flight
 - [ ] stream its narration as it works
 - [ ] use a real test/build/lint reporter to extract structured failures
 - [ ] use cross-file binding (or an LSP when available) to pick the right

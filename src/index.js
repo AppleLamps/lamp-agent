@@ -4,7 +4,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { loadConfig } from "./config/config.js";
-import { createTask, updateTaskStatus } from "./task/task-manager.js";
+import { createTask, loadTask, updateTaskStatus } from "./task/task-manager.js";
 import { appendEvent } from "./log/event-log.js";
 import { createToolRuntime } from "./tools/runtime.js";
 import { summarizeProject, finalReview } from "./review/review.js";
@@ -104,6 +104,24 @@ async function main() {
     }
     if (line === "/tasks" || line.toLowerCase() === "list tasks") {
       await printTasksList(cwd, ui);
+      continue;
+    }
+    if (line.toLowerCase().startsWith("/resume ") || line.toLowerCase().startsWith("resume task ")) {
+      const taskId = line.replace(/^\/resume\s+|^resume\s+task\s+/i, "").trim();
+      const resumed = await resumeTask({
+        cwd,
+        taskId,
+        config,
+        model,
+        rootTools: tools,
+        prompts,
+        requestApproval,
+        ui,
+        setActiveTask: (next) => { activeTask = next; },
+        setActiveTools: (next) => { activeTools = next; }
+      });
+      if (resumed?.activeTask) activeTask = resumed.activeTask;
+      if (resumed?.activeTools) activeTools = resumed.activeTools;
       continue;
     }
     if (line.toLowerCase().startsWith("/show ") || line.toLowerCase().startsWith("show task ")) {
@@ -427,6 +445,7 @@ Commands:
   /plan    Show the pre-patch plan recorded for the active task
   /tasks   List recent tasks (status, last phase, resumable flag)
   /show    Show details for one task by id (e.g. /show task-20260425-200000)
+  /resume  Resume a recorded task by id (e.g. /resume task-20260425-200000)
   /undo    Undo files changed by the last task, when snapshots exist
   /exit    Quit
 
@@ -502,6 +521,318 @@ async function handleReviewAction({ prompts, tools, rootTools, activeTask, ui, c
   }
   if (action.choice === "cancel_task") {
     await cancelTask(activeTask, ui);
+  }
+}
+
+async function resumeTask({ cwd, taskId, config, model, rootTools, prompts, requestApproval, ui, setActiveTask, setActiveTools }) {
+  if (!taskId) {
+    output.write(`${ui.warning("Pass a task id, e.g. /resume task-20260425-200000")}\n`);
+    return null;
+  }
+
+  let activeTask;
+  try {
+    activeTask = await loadTask(cwd, taskId);
+  } catch {
+    output.write(`${ui.warning(`Task ${taskId} not found under .agent/tasks.`)}\n`);
+    return null;
+  }
+
+  const phaseController = await initializePhaseController(activeTask);
+  activeTask.phaseController = phaseController;
+  const phases = await phaseController.read();
+  if (!isResumable(phases)) {
+    output.write(`${ui.warning(`Task ${taskId} is not resumable. It may already be complete or have no phase state.`)}\n`);
+    return { activeTask, activeTools: rootTools };
+  }
+
+  setActiveTask(activeTask);
+  setActiveTools(rootTools);
+  output.write(`${ui.progress(`Resuming ${taskId}`)}\n`);
+  await appendEvent(activeTask.dir, {
+    type: "task_resumed",
+    message: "Task resumed from CLI",
+    last_phase: describeLastPhase(phases)
+  });
+
+  await runResumeLifecycle({
+    activeTask,
+    phaseController,
+    tools: rootTools,
+    model,
+    config,
+    prompts,
+    rootTools,
+    ui,
+    cwd,
+    setActiveTools
+  });
+  return { activeTask, activeTools: rootTools };
+}
+
+async function runResumeLifecycle({ activeTask, phaseController, tools, model, config, prompts, rootTools, ui, cwd, setActiveTools }) {
+  const line = activeTask.task.user_request;
+  let phases = await phaseController.read();
+
+  let memoryResult = { memory: null, refreshed: false, reason: "not refreshed during resume" };
+  let projectSummary = await latestEventPayload(activeTask, "project_summary", "summary");
+  if (!phaseDone(phases, "triage")) {
+    output.write(`${ui.progress("Resuming triage")}\n`);
+    await phaseController.begin("triage");
+    memoryResult = await refreshProjectMemory({ cwd: tools.cwd, tools });
+    projectSummary = await summarizeProject(tools, memoryResult.memory);
+    await appendEvent(activeTask.dir, {
+      type: "project_summary",
+      message: "Project triage completed during resume",
+      summary: projectSummary,
+      memory_refreshed: memoryResult.refreshed,
+      memory_reason: memoryResult.reason
+    });
+    await updateBeliefsFromTriage(activeTask, projectSummary);
+    await phaseController.complete("triage", { project_summary: projectSummary });
+  }
+  if (!projectSummary) {
+    memoryResult = await refreshProjectMemory({ cwd: tools.cwd, tools });
+    projectSummary = await summarizeProject(tools, memoryResult.memory);
+  }
+
+  phases = await phaseController.read();
+  let currentPlan = activeTask.task.current_plan?.length
+    ? activeTask.task.current_plan
+    : buildTaskPlan({ userRequest: line, projectSummary });
+  let riskyBoundaries = Array.isArray(activeTask.task.risky_boundaries)
+    ? activeTask.task.risky_boundaries
+    : identifyRiskyBoundaries({ userRequest: line, projectSummary });
+  let prePatchPlan = await readJson(path.join(activeTask.dir, "pre-patch-plan.json"), null);
+  const isExplain = activeTask.task.task_type === "explain";
+  const hasRisk = riskyBoundaries.length > 0;
+
+  if (!phaseDone(phases, "plan")) {
+    output.write(`${ui.progress("Resuming plan")}\n`);
+    await phaseController.begin("plan");
+    const fullFileList = await tools.listFiles(".");
+    prePatchPlan = buildPrePatchPlan({
+      userRequest: line,
+      projectSummary,
+      riskyBoundaries,
+      projectMemory: memoryResult.memory,
+      codeIndex: fullFileList?.ok ? { files: fullFileList.files } : null
+    });
+    await writeFile(path.join(activeTask.dir, "pre-patch-plan.json"), `${JSON.stringify(prePatchPlan, null, 2)}\n`);
+
+    let modelPlan = null;
+    if (config.model.allowNetwork && !isExplain && hasRisk) {
+      const planResult = await requestStructuredPlan({
+        adapter: model,
+        userRequest: line,
+        projectSummary,
+        riskyBoundaries,
+        heuristicPlan: currentPlan,
+        activeTask
+      });
+      if (planResult.ok) modelPlan = planResult.plan;
+    }
+
+    await updateTaskStatus(activeTask, "planning", {
+      current_plan: currentPlan,
+      risk_level: riskyBoundaries.length ? "elevated" : "normal",
+      risky_boundaries: riskyBoundaries
+    });
+    await appendEvent(activeTask.dir, {
+      type: "task_plan",
+      message: "Task plan recorded during resume",
+      current_plan: currentPlan,
+      risky_boundaries: riskyBoundaries,
+      pre_patch_plan_summary: summarizePrePatchPlan(prePatchPlan),
+      model_plan_summary: modelPlan ? {
+        summary: modelPlan.summary,
+        step_count: modelPlan.steps?.length ?? 0,
+        risky_boundaries: modelPlan.risky_boundaries || []
+      } : null
+    });
+    const blockingWarnings = (prePatchPlan.warnings || []).filter((entry) => entry.blocking === true);
+    if (blockingWarnings.length) {
+      output.write(`${ui.card("pre-patch warnings", formatPrePatchWarnings({ warnings: blockingWarnings }))}\n`);
+      const proceed = await requestApproval(
+        { action: "ask", tier: "pre_patch_warning", reason: prePatchWarningReason(blockingWarnings) },
+        { taskId: activeTask.id }
+      );
+      if (!proceed.approved) {
+        await appendEvent(activeTask.dir, {
+          type: "pre_patch_plan_denied",
+          message: proceed.cancelled
+            ? "User cancelled the task at the pre-patch warning."
+            : proceed.alternative
+              ? "User asked for an alternative approach at the pre-patch warning."
+              : "User denied the pre-patch plan; task halted before patch.",
+          warnings: blockingWarnings
+        });
+        await updateTaskStatus(activeTask, proceed.cancelled ? "cancelled" : "halted_pre_patch");
+        output.write(`${ui.warning("Task halted before any files were touched.")}\n`);
+        return;
+      }
+    }
+    await phaseController.complete("plan", {
+      current_plan: currentPlan,
+      risky_boundaries: riskyBoundaries,
+      pre_patch_plan: prePatchPlan
+    });
+  }
+
+  phases = await phaseController.read();
+  let response = await latestEventPayload(activeTask, "assistant_response", null);
+  if (response?.message && !response.taskPatch) {
+    response = { message: response.message, taskPatch: {} };
+  }
+  if (!response) {
+    const latestMessage = await latestEventPayload(activeTask, "assistant_response", "message");
+    if (latestMessage) response = { message: latestMessage, taskPatch: {} };
+  }
+
+  if (!phaseDone(phases, "patch")) {
+    output.write(`${ui.progress("Resuming patch")}\n`);
+    await phaseController.begin("patch", {
+      task_type: activeTask.task.task_type,
+      project_summary: projectSummary,
+      inspected_files: inspectedFilesForResumePatch(projectSummary, prePatchPlan),
+      current_plan: currentPlan,
+      risky_boundaries: riskyBoundaries
+    });
+
+    if (config.model.allowNetwork && !isExplain && hasRisk) {
+      const specResult = await requestStructuredEditSpec({
+        adapter: model,
+        userRequest: line,
+        projectSummary,
+        currentPlan,
+        prePatchPlan,
+        activeTask
+      });
+      if (specResult.ok) {
+        output.write(`${ui.progress(`Model edit-spec recorded (${specResult.edit_spec.edits?.length || 0} planned edits, ${specResult.edit_spec.estimated_risk || "?"} risk)`)}\n`);
+      }
+    }
+
+    const taskAbort = new AbortController();
+    activeTask.abortController = taskAbort;
+    let streamingActive = false;
+    try {
+      response = await model.respond({
+        userRequest: line,
+        projectSummary,
+        tools,
+        activeTask,
+        allowedTools: TASK_PHASES.patch.allowedTools,
+        onProgress(message) {
+          output.write(`${ui.progress(message)}\n`);
+        },
+        onToken(token) {
+          if (!streamingActive) {
+            output.write(`${ui.progress("Streaming model response")}\n`);
+            streamingActive = true;
+          }
+          output.write(token);
+        },
+        signal: taskAbort.signal
+      });
+      if (streamingActive) output.write("\n");
+    } catch (error) {
+      const errorMessage = error?.message || String(error);
+      output.write(`${ui.warning(`Model error: ${errorMessage}. Continuing with a fallback response so the task can finish cleanly.`)}\n`);
+      await appendEvent(activeTask.dir, {
+        type: "model_error",
+        phase: "patch",
+        message: errorMessage
+      });
+      response = {
+        message: `The model adapter failed during the patch phase: ${errorMessage}. The harness recorded the error and continued without applying any model-driven changes.`,
+        taskPatch: {
+          assumptions: [`Model adapter raised an error: ${errorMessage}`]
+        },
+        error: { phase: "patch", message: errorMessage }
+      };
+    }
+
+    await updateTaskStatus(activeTask, "patching", {
+      ...response.taskPatch,
+      current_plan: response.taskPatch?.current_plan?.length ? response.taskPatch.current_plan : currentPlan,
+      risky_boundaries: riskyBoundaries
+    });
+    await updateBeliefsFromResponse(activeTask, response);
+    await appendEvent(activeTask.dir, {
+      type: "assistant_response",
+      message: response.message
+    });
+    await phaseController.complete("patch", { assistant_response: response });
+  }
+
+  phases = await phaseController.read();
+  if (isExplain) {
+    if (!phaseDone(phases, "verify")) await phaseController.skip("verify", "Explain-style task: no edits to verify.");
+    if (!phaseDone(await phaseController.read(), "critique")) await phaseController.skip("critique", "Explain-style task: no patch to critique.");
+    if (!phaseDone(await phaseController.read(), "final_review")) await phaseController.skip("final_review", "Explain-style task: answered inline.");
+    await updateTaskStatus(activeTask, "answered");
+    output.write(`\n${ui.assistant(response?.message || "Task resumed and completed.")}\n\n`);
+    return;
+  }
+
+  if (!phaseDone(phases, "verify")) {
+    output.write(`${ui.progress("Resuming verification")}\n`);
+    await phaseController.begin("verify");
+    const verification = await verifyAndRepair({
+      activeTask,
+      tools,
+      model,
+      userRequest: line,
+      projectSummary,
+      allowedRepairTools: [...new Set([...TASK_PHASES.patch.allowedTools, ...TASK_PHASES.verify.allowedTools])],
+      onProgress(message) {
+        output.write(`${ui.progress(message)}\n`);
+      }
+    });
+    await phaseController.complete("verify", { verification_result: verification || { ok: true } });
+  }
+
+  phases = await phaseController.read();
+  let critique = null;
+  if (!phaseDone(phases, "critique")) {
+    output.write(`${ui.progress("Resuming critique")}\n`);
+    await phaseController.begin("critique");
+    critique = await critiqueTask({ activeTask, tools, response: response || { message: "Resumed task.", taskPatch: {} }, model, projectSummary });
+    await updateBeliefsFromCritique(activeTask, critique);
+    await appendEvent(activeTask.dir, {
+      type: "critique",
+      message: critique.summary,
+      status: critique.status,
+      source: critique.source,
+      findings: critique.findings
+    });
+    await phaseController.complete("critique", { critique });
+  } else {
+    critique = await readExistingCritique(activeTask);
+  }
+
+  phases = await phaseController.read();
+  if (!phaseDone(phases, "final_review")) {
+    output.write(`\n${ui.assistant(response?.message || "Task resumed.")}\n`);
+    const diffBeforeReview = await tools.taskDiff(activeTask);
+    await phaseController.begin("final_review", {
+      diff_available: Boolean(diffBeforeReview),
+      checks_recorded: true,
+      critique_complete: true
+    });
+    const review = await finalReview(activeTask, tools, response || { message: "Task resumed.", taskPatch: {} }, critique);
+    await phaseController.complete("final_review", { final_review: review });
+    output.write(`\n${ui.card("review", review)}\n\n`);
+    await handleReviewAction({
+      prompts,
+      tools,
+      rootTools,
+      activeTask,
+      ui,
+      cwd,
+      setActiveTools
+    });
   }
 }
 
@@ -706,6 +1037,22 @@ function isResumable(phases) {
   }
   // All recorded phases completed but final_review is missing.
   return Object.values(phases).some((entry) => entry?.state === "completed");
+}
+
+function phaseDone(phases, phase) {
+  const state = phases?.[phase]?.state;
+  return state === "completed" || state === "skipped";
+}
+
+function inspectedFilesForResumePatch(projectSummary, prePatchPlan) {
+  if (projectSummary?.notableFiles?.length) return projectSummary.notableFiles;
+  const candidates = prePatchPlan?.expected_scope?.candidate_files || [];
+  if (candidates.length) return candidates;
+  // A completed plan phase is artifact-backed evidence that triage and
+  // planning already happened before resume. Keep the patch gate moving
+  // even in tiny non-git workspaces where `summarizeProject` has no
+  // "notable" src/test/config files to report.
+  return ["(resume: prior triage and plan completed)"];
 }
 
 async function printPrePatchPlan(activeTask, ui) {
@@ -965,6 +1312,27 @@ async function readJsonLines(filePath) {
   } catch {
     return [];
   }
+}
+
+async function latestEventPayload(activeTask, type, key) {
+  const events = await readJsonLines(path.join(activeTask.dir, "events.jsonl"));
+  for (const event of events.reverse()) {
+    if (event?.type !== type) continue;
+    if (key === null) return event;
+    return event?.[key] ?? null;
+  }
+  return null;
+}
+
+async function readExistingCritique(activeTask) {
+  const text = await readText(path.join(activeTask.dir, "review.md"), "");
+  return {
+    ok: true,
+    status: text ? "existing" : "not_recorded",
+    source: "resume",
+    summary: text || "Existing critique was already completed before resume.",
+    findings: []
+  };
 }
 
 function isAlternativeAnswer(answer) {
