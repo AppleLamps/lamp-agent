@@ -34,12 +34,15 @@ Inside the CLI:
 
 ```txt
 > What kind of project is this?
-> /status
-> /diff
-> /details
-> /files
-> /undo
-> /exit
+> /status              # workspace status + tracked task changes
+> /diff                # active task diff summary
+> /details             # task artifacts, checks, model usage, phases
+> /files               # changed files for the active task
+> /plan                # pre-patch plan recorded for the active task
+> /tasks               # list recent tasks (status, last phase, resumable flag)
+> /show <task-id>      # full per-task summary card
+> /undo                # restore tracked files from snapshots
+> /exit                # quit (Ctrl-C captures partial state and exits 130)
 ```
 
 The CLI renders a styled chat shell with:
@@ -47,6 +50,7 @@ The CLI renders a styled chat shell with:
 - a compact banner and `agent >` prompt
 - visible user turns
 - progress lines while the harness works
+- streamed model tokens when the configured provider supports streaming
 - boxed assistant responses
 - boxed review cards
 - direct review actions: `accept`, `adjust <request>`, `undo`, and `see diff`
@@ -54,312 +58,221 @@ The CLI renders a styled chat shell with:
 
 ## Current Handoff Status
 
-Core MVP and Phase 2 are implemented and tested. Phase 3 items 1
-through 7 are in progress. Items 1–6 are described below; item 7
-(resumable tasks and cancel-in-flight) lands phase-aware
-cancellation, a SIGINT handler that captures partial state, the
-`/tasks` and `/show` CLI commands, and an alternate-approach
-belief that tells the model when the user denied an operation
-with "another approach". Full `/resume <task-id>` is the last
-remaining piece for item 7. Latest verified baseline: `npm test`
-passes with 190 tests; `npm run test:e2e` runs 14 end-to-end
-tests that drive the CLI binary against four fixture
-repositories. Latest pushed commit at this handoff: `858bd92
-Land structured plan + edit-spec outputs (Phase 3 item 6)` on
+Core MVP and Phase 2 are implemented and tested. Phase 3 items 1–7
+are in flight; items 8–10 are not started. The harness can drive a
+real repository through the full lifecycle, swap providers, stream
+responses, cancel mid-flight, and persist structured plan / edit-spec
+artifacts alongside the existing critique output.
+
+Latest verified baseline: `npm test` passes with 190 tests (includes
+e2e); `npm run test:e2e` runs 14 end-to-end tests against four
+fixture repositories. Latest pushed commit: `b4e910f Land
+cancellation, listing, and alt-approach belief (Phase 3 item 7)` on
 `main`.
 
-Most recent completed work:
+### What landed in Phase 3 (per item)
 
-- Phase 3 roadmap drafted in `phase 3.txt`, organized into ten items grounded
-  in the seven Phase 3 candidate areas left at the end of Phase 2.
-- Phase 3 item 1:
-  - End-to-end CLI driver and fixture-copy helpers under
-    `test/e2e/helpers/`. Driver spawns `node ./src/index.js` with piped
-    stdio, supports `expect()`/`sendLine()`/`exit()`/
-    `respondToApproval()`, fails fast if the harness exits mid-expect,
-    and strips `NODE_TEST_*` env vars so child `node --test` runs report
-    real exit codes instead of attaching to the parent test runner.
-  - Four checked-in fixtures under `test/fixtures/`: `non-git-plain`,
-    `node-builtin-test-passing`, `node-builtin-test-failing`, and
-    `pytest-failing`. Node-runner fixtures invoke their tests through
-    explicit file paths (`specs/main.mjs`) so Node's auto-discovery does
-    not load them as part of the parent suite; the pytest fixture
-    configures `pyproject.toml` to recognise `check_*.py` so its specs
-    aren't auto-discovered either.
-  - Pluggable model adapter via `src/model/index.js`'s
-    `createModelAdapter(config)` factory. When `LAMP_MODEL_ADAPTER` points
-    at an ESM module exporting `createAdapter(config)`, that adapter is
-    used; otherwise OpenRouter is returned. This is also the seam Phase 3
-    item 5 (multi-provider adapters) will plug into.
-  - Stub model adapter (`test/e2e/helpers/stub-adapter.js`) loaded by the
-    spawned CLI; reads a JSON script from `LAMP_STUB_SCRIPT` and runs
-    listed tool calls against the harness's `tools` object. The
-    test-side helper (`stub-script.js`) writes the script to a tmp file.
-  - 13 e2e tests in `test/e2e/cli.test.js`:
-    - banner + clean `/exit`
-    - full lifecycle on a Node fixture (asserts every phase, plan, memory,
-      check-results, events, final-summary, checkpoint)
-    - failing-verify path on a broken Node fixture
-    - non-git workspace lifecycle
-    - destructive command blocked by the permission engine
-    - malformed unified diff rejected with no changes
-    - stub-driven `create_file` completes with verify still passing
-    - dependency-change approval triggered and denied
-    - secret-file (`.env`) approval triggered and denied
-    - external-publish (`git push`) approval triggered and denied
-    - `model.respond` throwing → harness records a `model_error` event,
-      surfaces a warning, and the lifecycle still reaches `final_review`
-    - shadow apply-back conflict: real workspace edited during a
-      shadow-mode task → `accept` is blocked and
-      `apply-back-conflicts.json` is written with the affected files
-    - pytest runner: stub invokes `run_test_file` against a failing
-      Python spec; check-results.json records the failure (gated on
-      `python -m pytest --version`)
-  - `scripts/run-tests.mjs` enumerator that explicitly lists
-    `*.test.{js,mjs,cjs}` files and skips `helpers/`/`fixtures/` so the
-    fast and end-to-end suites both run cleanly under Node 24.
-  - `npm test` (full suite) and `npm run test:e2e` (e2e only) scripts.
-- Phase 3 item 2 progress:
-  - `src/checks/structured-reporter.js` has parsers for TAP v13 (Node
-    `--test`), Vitest JSON, Jest JSON, pytest JUnit XML, and ESLint
-    JSON. Each returns the same shape as `parseCheckOutput`, returning
-    `null` on non-matching input so callers can fall back to the regex
-    parser.
-  - The test-runner descriptors in
-    `src/checks/test-runner-detector.js` now expose a
-    `structuredReporter` object on Vitest, Jest, and Node `--test`,
-    with the format name and reporter-flagged command builders.
-  - `runCheckCommand` accepts a `structuredFormat` option and tries
-    the structured parser first; it falls back to the regex parser
-    when the structured form returns null. Records carry a
-    `parsed_source` tag (`structured:<format>` or `regex`).
-  - `runTestFile`, `runTestName`, and `runRelatedTests` automatically
-    pick the structured-reporter command builder when the runner
-    exposes one.
-  - Six golden-output fixtures live under
-    `test/fixtures/check-output/` (TAP captures from local Node and
-    pytest plus hand-crafted Vitest/Jest/ESLint samples), and
-    `test/structured-reporter.test.js` plus new wiring tests in
-    `test/test-runner-detector.test.js` and
-    `test/targeted-check-tools.test.js` lock the behavior in.
-  - `src/checks/check-parser.js` now has collectors for all seven
-    targeted build tools (esbuild, Vite/Rollup, webpack, Next.js,
-    TypeScript pretty mode, Cargo, Go) producing the standard
-    `errors[]` record with `{source, file, line, column, severity,
-    code?, message}` plus tool-specific fields. Locked in by
-    hand-crafted golden fixtures under
-    `test/fixtures/check-output/build-errors/` and a per-tool test
-    suite that also verifies parsers compose cleanly when multiple
-    tools' output appears in the same run.
-  - `src/checks/relevant-files.js` walks each failing test file's
-    imports through the code index, resolves relative paths against
-    the workspace file list (with common extensions and `index.<ext>`
-    fallback), applies a co-location heuristic, and treats files
-    inside `test/`/`tests/`/`__tests__/`/`spec/`/`specs/` as test
-    files even without the `.test.`/`.spec.` suffix. `runCheckCommand`
-    calls the mapper after parsing so every check record carries both
-    a re-ranked `likely_relevant_files` (import-graph > co-located
-    > stack) and a `likely_relevant_files_provenance` map.
-  - `src/checks/failure-summary.js` reduces a parsed check record to
-    a compact, model-friendly shape (status, errors[], failed_tests,
-    expected/actual, parsed source, likely_relevant_files zipped with
-    provenance, plus the invoking command). The repair loop calls
-    this summariser before passing failures to `model.repair`, so the
-    model sees structured evidence instead of the full audit record
-    (with raw-output paths, IDs, timestamps, etc.).
-  - Still TBD for item 2: pytest JUnit wiring (needs tmp-file
-    capture) and ESLint structured wiring.
-- Phase 3 item 3 progress:
-  - `src/task/pre-patch-plan.js` builds an `expected_scope` (candidate
-    files, risk labels, predicted checks), `danger_zones`
-    (avoid_touching, secret paths, lockfiles, dependency manifests),
-    and a `warnings` array. Warnings that the planner can prove cross
-    a danger-zone path are tagged `blocking: true`.
-  - The CLI's plan phase builds the plan, persists it as
-    `pre-patch-plan.json` under the task directory, prints a
-    `pre-patch warnings` card, and prompts the user before patch
-    begins when any warning is blocking. A `/plan` shortcut prints
-    the persisted plan; the phase controller now requires
-    `pre_patch_plan` as a plan-phase output.
-  - The runtime exposes `previewPatch(patch)` (a dry-run apply),
-    surfaced as the `preview_patch` model tool so the model can
-    validate a patch before committing it.
-  - The CLI driver's `respondToApproval` now tracks an offset
-    internally so consecutive prompts can be answered cleanly when
-    two boundaries fire in sequence (pre-patch warning + actual
-    operation).
-- Phase 3 item 4 progress:
-  - `streamOpenRouterChat` in `src/model/openrouter.js` handles the
-    SSE stream: text deltas are forwarded through `onToken`,
-    tool-call deltas are accumulated by index, and the helper
-    returns the same `{ choices, usage }` shape as the non-streaming
-    call so the rest of the `respond` loop is unchanged.
-  - `respond` now accepts an `AbortSignal`; the CLI creates a
-    per-task `AbortController` and `cancel task` aborts it.
-    `AbortError` is detected and bypasses the retry loop. Aborted
-    requests resolve as `{ cancelled: true, ... }` with a
-    `model_aborted` event recorded so the rest of the lifecycle can
-    finish cleanly.
-  - The streaming path passes `stream_options.include_usage` so
-    OpenRouter still returns token / cost data in the final SSE
-    chunk; `model-usage.jsonl` tags the entry with `streaming: true`.
-  - The CLI prints tokens to stdout as they arrive with a one-line
-    "Streaming model response" progress indicator on the first token.
-- Phase 3 item 5 progress (multi-provider adapters):
-  - `src/model/openai.js` — OpenAI Chat Completions adapter (also
-    works against Azure OpenAI by overriding `endpoint`).
-  - `src/model/local.js` — OpenAI-compatible local-server adapter
-    (Ollama, LM Studio, vLLM, llama.cpp `--api-server`). Requires
-    `endpoint` or `baseUrl` to be set.
-  - `src/model/anthropic.js` — direct Anthropic Messages API
-    adapter (no SDK dependency). Translates the harness's
-    `TOOL_DEFINITIONS` into Anthropic `input_schema`, supports
-    tool-calling chat plus text-only streaming via `streamText`,
-    and structured-JSON critique.
-  - `createModelAdapter` in `src/model/index.js` now dispatches by
-    `modelConfig.provider` (`openrouter` | `openai` | `anthropic`
-    | `local`); defaults to OpenRouter for backward compat. The
-    existing `LAMP_MODEL_ADAPTER` test-stub override still wins.
-  - Per-provider env var defaults: `OPENROUTER_API_KEY`,
-    `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LAMP_LOCAL_API_KEY`.
-- Phase 3 item 6 progress (structured outputs beyond critique):
-  - `src/model/structured-output.js` defines `PLAN_SCHEMA`,
-    `EDIT_SPEC_SCHEMA`, and `REPAIR_FINDINGS_SCHEMA` plus a small
-    JSON-Schema-shaped validator and a system-prompt formatter.
-  - Each adapter (OpenAI-compatible and Anthropic) gained a
-    `respondJson({ system, user })` method that returns
-    `{ ok, structured?, raw }`.
-  - `src/task/structured-plan.js` and `src/task/edit-spec.js`
-    orchestrate the requests, validate, and persist `plan.json`
-    and `edit-spec.json` under the task directory. Failures fall
-    back silently (the heuristic plan and the existing patch flow
-    are unchanged).
-  - The CLI invokes both during the plan and patch phases when
-    `model.allowNetwork` is enabled.
-- Phase 3 item 7 progress (resumable tasks and cancel-in-flight):
-  - `phaseController.markCancelled(reason)` /
-    `markInterrupted(reason)` flip the in-progress phase to
-    `cancelled` / `interrupted` and emit a `phase_cancelled` /
-    `phase_interrupted` event.
-  - `cancelTask` in `src/index.js` calls those before flipping
-    the task status, so /tasks (and the future /resume) can tell
-    where the run stopped.
-  - A SIGINT handler captures partial state on Ctrl-C and exits
-    with code 130; the active phase becomes `interrupted`
-    (distinct from `cancelled`).
-  - New `/tasks` and `/show <task-id>` CLI commands print a
-    per-task summary including status, last phase, and a
-    resumable flag.
-  - Approval denials with "another approach" now record a
-    `constraint`-typed belief in `beliefs.json` so the model
-    sees the constraint on its next loop.
-- Two bug fixes surfaced by the new e2e coverage:
-  - the permission engine's destructive-command regex used a trailing
-    `\b` that failed at end-of-string and let `rm -rf /` and
-    `chmod -R 777 /` slip through (fixed in
-    `src/permissions/permission-engine.js`, locked in by new unit tests).
-  - `src/index.js` didn't catch errors from `model.respond`, so an
-    adapter throwing (provider 5xx, transient blip) tore down the task
-    by leaving the process hanging via readline. Fixed by wrapping the
-    call in a try/catch that logs a `model_error` event, warns the
-    user, and synthesises a fallback assistant response so the
-    lifecycle continues.
+- **Item 1 — Real-repo fixtures and e2e CLI coverage.** E2e driver
+  and fixture-copy helpers under `test/e2e/helpers/`; four fixtures
+  (`non-git-plain`, `node-builtin-test-passing`,
+  `node-builtin-test-failing`, `pytest-failing`); 14 e2e tests
+  covering banner+exit, full lifecycle, failing verify, non-git
+  workspace, destructive-command block, malformed-patch reject,
+  stub-driven file create, dependency / secret / push approval flows
+  (all denied), `model.respond` throw → graceful fallback, shadow
+  apply-back conflict, pytest runner, and `/tasks` + `/show`. Stub
+  model adapter in `test/e2e/helpers/stub-adapter.js` swappable via
+  `LAMP_MODEL_ADAPTER`. **Open**: Vitest / Express+typecheck /
+  Next.js+build fixtures and a fake-fetch test for OpenRouter
+  transient retry.
+- **Item 2 — Stronger targeted checks and parsers.** Reporter-aware
+  parsing for TAP, Vitest JSON, Jest JSON, pytest JUnit XML, and
+  ESLint JSON in `src/checks/structured-reporter.js`; build-error
+  parsers for esbuild, Vite/Rollup, webpack, Next.js, TypeScript
+  pretty mode, Cargo, and Go in `src/checks/check-parser.js`.
+  Failed-test → source mapping in `src/checks/relevant-files.js`
+  (re-ranked `likely_relevant_files` plus a `_provenance` map).
+  Repair loop now hands `model.repair` a compact summary via
+  `src/checks/failure-summary.js`. **Open**: pytest JUnit wiring
+  (needs tmp-file capture) and ESLint structured wiring.
+- **Item 3 — Pre-patch blast radius and edit preview.** The plan
+  phase builds and persists `pre-patch-plan.json` (expected scope,
+  danger zones, blocking warnings); the phase controller gates patch
+  on it. `tools.previewPatch()` is a dry-run apply, surfaced as the
+  `preview_patch` model tool. `/plan` CLI shortcut. **Open**:
+  "preview" review action and rename / signature impact analysis.
+- **Item 4 — Streaming wired into the CLI.** SSE plumbing in
+  `src/model/openrouter.js`'s `streamOpenRouterChat` handles text
+  deltas + tool-call deltas by index. `respond` accepts an
+  `AbortSignal`; the CLI runs a per-task `AbortController` and
+  `cancel task` aborts the in-flight request (surfaces as
+  `{ cancelled: true }` with a `model_aborted` event). Streamed-usage
+  is recorded via `stream_options.include_usage`. **Open**: a
+  streaming-aware `ui.assistant` block, streaming the repair loop.
+- **Item 5 — Multi-provider model adapters.** `createModelAdapter`
+  dispatches by `modelConfig.provider` to one of: `openrouter`
+  (default), `openai` (`src/model/openai.js`), `local`
+  (`src/model/local.js`, OpenAI-compatible local server), or
+  `anthropic` (`src/model/anthropic.js`, direct Messages-API,
+  no SDK dep). Per-provider env var defaults: `OPENROUTER_API_KEY`,
+  `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LAMP_LOCAL_API_KEY`.
+  **Open**: Anthropic prompt caching, Anthropic streaming inside
+  `respond`/`repair`, live-network smoke tests.
+- **Item 6 — Structured outputs beyond critique.**
+  `src/model/structured-output.js` defines `PLAN_SCHEMA`,
+  `EDIT_SPEC_SCHEMA`, `REPAIR_FINDINGS_SCHEMA` plus a small
+  JSON-Schema-shaped validator. Each adapter exposes `respondJson({
+  system, user })`. The CLI persists `plan.json` and `edit-spec.json`
+  during plan and patch phases when the network is enabled; failures
+  silently fall back. **Open**: wire `repair_findings` (schema is
+  defined) into `verifyAndRepair` and the review surface.
+- **Item 7 — Resumable tasks and cancel-in-flight.** Phase
+  controller gained `markCancelled` / `markInterrupted`; `cancelTask`
+  flips the in-progress phase before flipping the task status. SIGINT
+  handler captures partial state on Ctrl-C and exits 130. New
+  `/tasks` and `/show <task-id>` CLI commands. Approval denials with
+  "another approach" record a `constraint`-typed belief.
+  **Open**: `/resume <task-id>` itself — needs the main-loop body
+  in `src/index.js` extracted into a `runTaskLifecycle({...})`
+  function.
 
-Where we left off:
+### Bugs caught while building Phase 3
 
-- Phase 2 roadmap items are complete; there are no remaining Phase 2
-  implementation tasks.
-- Phase 3 roadmap exists in `phase 3.txt`. Item 1 is largely done; items
-  2–10 are not started.
-- `.agent/` is runtime state and is intentionally gitignored. Project memory
-  and task artifacts can be regenerated by the harness.
+- The permission engine's destructive-command regex used a trailing
+  `\b` that failed at end-of-string and let `rm -rf /` /
+  `chmod -R 777 /` slip through. Fixed in
+  `src/permissions/permission-engine.js`.
+- `model.respond` errors used to tear down the task (readline kept the
+  process alive after `main` rejected). Fixed by wrapping the call in
+  a try/catch that logs a `model_error` event and synthesises a
+  fallback assistant response so the lifecycle continues.
 
-Next recommended work:
+### Where we left off
 
-1. Item 7 leftover: implement `/resume <task-id>`. Extract the
+- Phase 2 roadmap items are complete.
+- Phase 3 items 1–7 in flight (see per-item status above and
+  `phase 3.txt`); items 8–10 not started.
+- `.agent/` is runtime state and is gitignored. Project memory and
+  task artifacts can be regenerated by the harness.
+
+### Next recommended work
+
+1. Item 7 leftover — implement `/resume <task-id>`. Extract the
    main-loop task body in `src/index.js` into a
-   `runTaskLifecycle({...})` function so a partially-completed
-   task can pick up at the next not-completed phase.
-2. Item 8 (dependency-aware edits and cross-file binding). Extend
-   `src/code/code-index.js` to resolve imports across files, then
+   `runTaskLifecycle({...})` function so a partially-completed task
+   picks up at the next not-completed phase using artifacts already
+   on disk.
+2. Item 8 — dependency-aware edits and cross-file binding.
+   Extend `src/code/code-index.js` to resolve imports across files;
    surface a `symbol_callers(name)` tool the model can use before
-   renaming a symbol.
-3. Item 6 leftovers: wire `repair_findings` (schema is defined)
-   into `verifyAndRepair` and the review surface.
-4. Item 5 leftovers: Anthropic prompt caching, Anthropic streaming
-   inside `respond`/`repair`, and a live-network smoke test gated
-   on per-provider env vars.
-5. Item 4 leftovers: streaming-aware `ui.assistant`, streaming the
-   repair loop.
-6. Item 3 leftovers: a "preview" review action and richer
-   pre-patch impact analysis.
-7. Item 2 stragglers (pytest JUnit wiring, ESLint structured wiring).
+   renaming.
+3. Stragglers (in priority order): repair-findings wiring (item 6);
+   Anthropic caching + streaming + smoke tests (item 5);
+   streaming-aware `ui.assistant` (item 4); preview review action +
+   rename impact (item 3); pytest JUnit + ESLint structured wiring
+   (item 2).
 
-Phase 3 roadmap items (see `phase 3.txt` for full detail):
-
-1. Real-repo fixtures and end-to-end CLI coverage.
-2. Stronger targeted checks and parsers (framework-specific failure parsing,
-   build parser depth, failed-test-to-source mapping).
-3. Pre-patch blast radius and edit preview.
-4. Streaming wired into the CLI.
-5. Multi-provider model adapters (Anthropic, OpenAI, local, plus the
-   existing OpenRouter adapter).
-6. Structured outputs beyond critique (plan, edit-spec, repair findings).
-7. Resumable tasks and cancel-in-flight.
-8. Dependency-aware edits and cross-file binding.
-9. Real language-server integration, TypeScript first.
-10. GitHub/CI integration (PR creation, check status, CI log repair).
+Phase 3 full roadmap (10 items) lives in `phase 3.txt`.
 
 Useful commands for the next session:
 
 ```sh
 npm test
+npm run test:e2e
 npm start
 ```
 
 ## Current Scope
 
-Implemented:
+Implemented (Phase 1–2 baseline plus Phase 3 items 1–7 in flight):
 
-- CLI chat loop
-- `.agent/` task directories and task JSON
-- event logging
-- structured `check-results.json` with raw check output files under each task
-- bounded verify-and-repair loop with `verification.json`
-- project file listing and search runtime
-- path and command permission classification
-- local package script detection
-- check runner for `test`, `lint`, `typecheck`, and `build`
-- tracked file snapshots for undo
-- task-start checkpoint metadata in `.agent/checkpoints`
-- snapshot-based diff summaries for non-git workspaces
-- unified-diff `apply_patch` tool
-- `commands.jsonl` audit logging for command runs
-- post-task critique pass with `review.md` output
-- belief ledger updates for project facts, assumptions, decisions, and critique risks
-- review card with changed files, diff summary, checks, warnings, and next actions
-- dedicated `run_tests`, `run_lint`, `run_typecheck`, and `run_build` tools
-- safer edit primitives: `create_file`, `delete_file`, `rename_file`, `replace_range`, `replace_exact`, `insert_before`, `insert_after`
-- code intelligence: `find_symbols`, `find_definition`, `find_references`, `find_imports`, `find_exports`, `route_map`
-- project memory: `.agent/memory/project.json`, stale-source refresh, and model-context integration
-- explicit phase controller: per-task `phases.json`, phase events, artifact gates, and phase-scoped model tools
-- opt-in shadow workspace foundation using git worktree or a filtered temporary copy
-- shadow workspace apply-back on accept for tracked changed files
-- shadow apply-back conflict detection when real files changed during a task
-- shadow apply-back conflict resolution with keep/apply/save choices and `.agent/conflicts` artifacts
-- better approval/review actions with richer menus, typed fallbacks, technical details, changed-file lists, and task cancellation
-- styled CLI shell with boxed assistant responses, review cards, `/diff`, review actions, and interactive menus
-- OpenRouter tool-calling loop with network disabled by default
-- model adapter contract, capability flags, transient retry, fallback models, structured critique output, streaming text, and usage/cost artifacts
-- better diff/review UX with changed-file reasons, blast radius, check snippets, severity-grouped warnings, and task timeline
-- approval prompts for risky path and command boundaries
-- local fallback response when model network calls are disabled
+**Lifecycle and state**
 
-Known gaps:
+- CLI chat loop with banner, prompt, progress lines, boxed assistant
+  responses, review cards, and SIGINT-aware Ctrl-C handling.
+- Per-task state under `.agent/tasks/<id>/`: `task.json`, `beliefs.json`,
+  `phases.json`, `changed-files.json`, `events.jsonl`,
+  `commands.jsonl`, `model-usage.jsonl`, `check-results.json`,
+  `checks/*`, `snapshots/*`, `conflicts/*`, `verification.json`,
+  `apply-back.json`, `apply-back-conflicts.json`, `review.md`,
+  `final-summary.md`, `pre-patch-plan.json`, `plan.json`,
+  `edit-spec.json`.
+- Task-start checkpoint under `.agent/checkpoints`.
+- Project memory at `.agent/memory/project.json` with stale-source
+  refresh.
+- Explicit phase controller (intake → triage → plan → patch → verify →
+  critique → final_review) with phase-scoped allowed tools and
+  artifact gates. `markCancelled` / `markInterrupted` capture
+  partial state.
 
-- targeted check runner is still basic
-- code intelligence is regex-based; no language-server depth (e.g. cross-file binding resolution)
-- Phase 2 roadmap is complete; future work should be planned as Phase 3
+**Tools and editing**
+
+- File listing, reading, search; tracked snapshots for undo.
+- Edit primitives: `apply_patch`, `preview_patch` (dry-run),
+  `write_file`, `create_file`, `delete_file`, `rename_file`,
+  `replace_range`, `replace_exact`, `insert_before`, `insert_after`.
+- Code intelligence (regex-based): `find_symbols`, `find_definition`,
+  `find_references`, `find_imports`, `find_exports`, `route_map`.
+- Targeted test runners: `detect_test_runner`, `run_test_file`,
+  `run_test_name`, `run_related_tests` with reporter-aware command
+  builders for Vitest / Jest / Node `--test`.
+- Broad checks: `run_tests`, `run_lint`, `run_typecheck`, `run_build`,
+  `run_available_checks`.
+- `git_status`, `git_diff`, `run_command` (classified, audit-logged).
+
+**Permissions and review**
+
+- Path and command permission classification with allow / ask /
+  blocked tiers and explicit handling for dependency, network, secret,
+  outside-workspace, push/deploy, and destructive forms.
+- Pre-patch planner that builds an `expected_scope` + `danger_zones`
+  + blocking warnings, and prompts before patch when the candidate
+  set crosses a danger path.
+- Bounded verify-and-repair loop (3 attempts) that prefers targeted
+  runs when failed files are known. Failures handed to `model.repair`
+  in a compact structured shape.
+- Critique pass (model JSON when available, local fallback otherwise),
+  then final review card with changed-file reasons, blast radius,
+  check snippets, severity-grouped warnings, and task timeline.
+- Approval prompts via interactive menu or typed fallback. Denials
+  with "another approach" record a `constraint`-typed belief.
+
+**Workspace isolation**
+
+- Opt-in shadow workspace via git worktree or filtered temp copy.
+- Shadow apply-back with hash-based conflict detection and per-file
+  keep/apply/save resolution under `.agent/conflicts`.
+
+**Model adapters**
+
+- Pluggable adapter factory in `src/model/index.js` dispatched by
+  `model.provider`: `openrouter` (default), `openai`, `anthropic`,
+  `local`.
+- OpenAI-compatible transport supports tool calling, JSON mode,
+  streaming with tool-call delta reassembly, transient retry,
+  fallback models, abortable requests, usage/cost recording.
+- Anthropic adapter implements the Messages API directly (no SDK)
+  with tool-call translation and text streaming.
+- `respondJson({ system, user })` available on every adapter for
+  structured outputs (plan, edit-spec, repair-findings schemas in
+  `src/model/structured-output.js`).
+- `LAMP_MODEL_ADAPTER` env var lets tests inject a stub adapter.
+
+**Parsers and reporters**
+
+- Reporter-aware structured parsers (TAP, Vitest JSON, Jest JSON,
+  pytest JUnit XML, ESLint JSON) plus regex collectors for esbuild,
+  Vite/Rollup, webpack, Next.js, TypeScript pretty mode, Cargo, Go,
+  ESLint, and the test-runner formats. Failed-test → source mapping
+  via the code index.
+
+### Known gaps
+
+- Code intelligence is still regex-based (no real language-server depth).
+- `/resume <task-id>` is the missing piece of item 7 (the rest is
+  done).
+- Several Phase 3 items have explicit "Open" sub-bullets above; see
+  also `phase 3.txt` for the full per-item picture.
 
 ## Shadow Workspace
 
@@ -417,30 +330,78 @@ before execution. Destructive command patterns are blocked.
 
 ## Important Files
 
-- `src/index.js`: CLI loop and task orchestration.
-- `src/tools/runtime.js`: permissioned file, patch, command, check, diff, and undo tools.
-- `src/model/openrouter.js`: model adapter, tool loop, critique, and repair methods.
-- `src/model/adapter-contract.js`: formal model adapter contract and capability defaults.
-- `src/verify/repair-loop.js`: bounded verify-and-repair phase.
-- `src/checks/check-parser.js`: structured parsing of check failures.
-- `src/checks/test-runner-detector.js`: detect test runner and build targeted check commands.
-- `src/code/code-index.js`: lightweight code intelligence index, references, and route detection.
-- `src/workspace/shadow-workspace.js`: shadow workspace creation, apply-back, and conflict detection.
-- `src/task/phase-controller.js`: explicit task phase state, gates, allowed tools, and artifacts.
-- `src/memory/project-memory.js`: project memory creation, stale refresh, and model-context facts.
-- `src/task/beliefs.js`: per-task belief ledger updates.
-- `src/review/review.js`: final review card.
-- `src/review/review-summary.js`: changed-file reasons, blast radius, check snippets, warnings, and timeline helpers.
-- `src/review/critique.js`: local/model critique pass.
-- `phase 2.txt`: completed Phase 2 roadmap, handoff status, and Phase 3 candidate list.
-- `phase 3.txt`: Phase 3 roadmap, with ten items, recommended build order, and Definition of Done.
-- `src/model/index.js`: pluggable model adapter factory (`createModelAdapter`); dispatches by `model.provider` (openrouter | openai | anthropic | local) and honors `LAMP_MODEL_ADAPTER` for test stubs.
-- `src/model/openrouter.js`: OpenAI-compatible transport (the shared base for OpenRouter, OpenAI, and local providers).
-- `src/model/openai.js` / `src/model/local.js` / `src/model/anthropic.js`: per-provider adapters.
-- `src/checks/structured-reporter.js`: reporter-aware parsers (TAP, Vitest JSON, Jest JSON, pytest JUnit XML, ESLint JSON) that produce the same record shape as `parseCheckOutput` and return null on mismatched input.
-- `src/task/pre-patch-plan.js`: pre-patch planner that produces expected scope, danger zones, and blocking warnings before the patch phase begins.
-- `test/fixtures/check-output/`: golden-output fixtures for the structured-reporter parsers (real captures and hand-crafted samples).
-- `scripts/run-tests.mjs`: explicit test-file enumerator used by `npm test` and `npm run test:e2e` (avoids Node 24 auto-discovery picking up helpers/fixtures).
-- `test/e2e/cli.test.js`: end-to-end CLI tests driving the binary against fixture repos.
-- `test/e2e/helpers/`: e2e CLI driver, fixture-copy helper, stub model adapter, and stub-script helper.
-- `test/fixtures/`: checked-in fixture repos used by the e2e suite (see `test/fixtures/README.md`).
+**CLI and orchestration**
+
+- `src/index.js` — CLI loop, slash commands, SIGINT handler, task
+  lifecycle wiring.
+- `src/tools/runtime.js` — permissioned tools (file ops, edit
+  primitives, `apply_patch` / `previewPatch`, command running, checks,
+  diff, undo, code-intel passthroughs).
+- `src/permissions/permission-engine.js` — path / command tier
+  classification.
+- `src/ui/terminal.js`, `src/ui/interactive.js` — styled output and
+  inquirer prompts.
+
+**Task state**
+
+- `src/task/task-manager.js` — task creation, status updates.
+- `src/task/phase-controller.js` — phase ordering, required outputs,
+  `markCancelled` / `markInterrupted`.
+- `src/task/beliefs.js` — per-task belief ledger.
+- `src/task/pre-patch-plan.js` — expected scope, danger zones,
+  blocking warnings; persists `pre-patch-plan.json`.
+- `src/task/structured-plan.js` / `src/task/edit-spec.js` —
+  request structured plan / edit-spec from the model and persist
+  `plan.json` / `edit-spec.json`.
+- `src/memory/project-memory.js` — `.agent/memory/project.json`
+  refresh and model-context facts.
+- `src/workspace/shadow-workspace.js` — shadow worktree / temp-copy,
+  apply-back, conflict detection and resolution.
+- `src/workspace/checkpoint.js` — task-start checkpoint and
+  snapshot-diff.
+
+**Model adapters**
+
+- `src/model/index.js` — `createModelAdapter` factory (dispatch by
+  `model.provider`; honors `LAMP_MODEL_ADAPTER` for stub injection).
+- `src/model/adapter-contract.js` — adapter contract surface and
+  capability defaults.
+- `src/model/openrouter.js` — OpenAI-compatible transport (shared
+  base for OpenRouter / OpenAI / local). Includes
+  `streamOpenRouterChat` and the canonical `TOOL_DEFINITIONS`.
+- `src/model/openai.js`, `src/model/local.js`, `src/model/anthropic.js`
+  — per-provider adapters.
+- `src/model/structured-output.js` — schemas + JSON-Schema-shaped
+  validator for plan / edit-spec / repair-findings outputs.
+
+**Checks, parsers, and review**
+
+- `src/checks/check-parser.js` — regex collectors for TS, ESLint,
+  test runners, esbuild, Vite/Rollup, webpack, Next.js, Cargo, Go.
+- `src/checks/structured-reporter.js` — reporter-aware parsers (TAP,
+  Vitest JSON, Jest JSON, pytest JUnit, ESLint JSON).
+- `src/checks/test-runner-detector.js` — runner detection +
+  reporter-flagged command builders.
+- `src/checks/relevant-files.js` — failed-test → source mapping with
+  provenance tags.
+- `src/checks/failure-summary.js` — compact failure shape for
+  `model.repair`.
+- `src/verify/repair-loop.js` — bounded verify-and-repair.
+- `src/review/review.js`, `src/review/review-summary.js`,
+  `src/review/critique.js` — final review card and critique pass.
+
+**Tests and fixtures**
+
+- `test/e2e/cli.test.js` — 14 end-to-end CLI tests.
+- `test/e2e/helpers/` — driver, fixture-copy helper, stub adapter,
+  stub-script helper.
+- `test/fixtures/` — fixture repos (see `test/fixtures/README.md`).
+- `test/fixtures/check-output/` — golden parser inputs.
+- `scripts/run-tests.mjs` — explicit test-file enumerator (skips
+  helpers / fixtures so Node 24 auto-discovery can't pick them up).
+
+**Roadmap docs**
+
+- `phase 2.txt` — completed Phase 2 roadmap and handoff record.
+- `phase 3.txt` — Phase 3 roadmap (10 items, recommended build
+  order, Definition of Done) with current-status checklist.

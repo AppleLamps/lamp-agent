@@ -2,9 +2,14 @@
 
 ## Handoff Summary
 
-This file is the initial Phase 3 roadmap. Phase 2 finished with the harness able
-to safely run a full task lifecycle on small workspaces; Phase 3 turns that
+This file is the Phase 3 roadmap. Phase 2 finished with the harness able to
+safely run a full task lifecycle on small workspaces; Phase 3 turns that
 foundation into something we can point at real repositories with confidence.
+
+Items 1–7 are in flight (most have committed scaffolding plus open
+sub-bullets); items 8–10 are not started. Each item's per-section block
+below has a `Status:` line and explicit `[x]` / `[~]` / `[ ]` boxes for
+the sub-bullets. The high-level checklist immediately below mirrors that.
 
 Current status:
 
@@ -140,22 +145,26 @@ Current status:
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
 - [ ] GitHub/CI integration (item 10) — not started.
 
-Where we are starting:
+Where we are now:
 
-- Phase 2 roadmap is complete. Latest verified baseline: `npm test` passes with
-  97 tests. Latest pushed commit at this handoff: `957efa5 Update handoff
-  documentation` on `main`.
-- The harness already has the seven task phases (intake → triage → plan → patch
-  → verify → critique → final_review), structured task artifacts, snapshot-based
-  undo, shadow workspace with apply-back conflict handling, regex code-intel,
-  targeted check runner, bounded repair loop, and a styled review card.
-- `.agent/` is intentionally ignored runtime state. All Phase 3 items must keep
-  the harness usable when `.agent/` is absent or partial.
+- Latest verified baseline: `npm test` passes with 190 tests
+  (includes the e2e suite). `npm run test:e2e` runs 14 end-to-end
+  tests against four fixture repositories. Latest pushed commit:
+  `b4e910f Land cancellation, listing, and alt-approach belief
+  (Phase 3 item 7)` on `main`.
+- The Phase 2 baseline (seven-phase lifecycle, structured task
+  artifacts, snapshot-based undo, shadow workspace, regex
+  code-intel, targeted check runner, bounded repair loop, styled
+  review card) carried forward unchanged.
+- `.agent/` is intentionally ignored runtime state. All Phase 3
+  items must keep the harness usable when `.agent/` is absent or
+  partial.
 
-Useful verification command:
+Useful verification commands:
 
 ```sh
-npm test
+npm test           # full suite (unit + e2e)
+npm run test:e2e   # e2e only
 ```
 
 ## Current Baseline
@@ -205,10 +214,29 @@ Phase 3 focuses on three things on top of that foundation:
 
 ## What Is Left
 
-All ten items below. The next session should treat item 1 (real-repo fixtures
-and end-to-end CLI coverage) as a prerequisite for the rest — most of the other
-items want fixture repos to exercise behavior, and the parsers and blast-radius
-work in particular need golden inputs to lock down.
+Items 1–7 are partially done — see the per-item sections below for the
+exact `[x]` / `[~]` / `[ ]` state. Items 8–10 are not yet started.
+
+Recommended next steps in priority order:
+
+1. Item 7 leftover: implement `/resume <task-id>`. Requires
+   extracting the main-loop body in `src/index.js` into a
+   `runTaskLifecycle({...})` function so a partially-completed
+   task picks up at the next not-completed phase using artifacts
+   already on disk.
+2. Item 8: dependency-aware edits and cross-file binding.
+3. Item 6 leftover: wire `repair_findings` (schema is defined)
+   into `verifyAndRepair` and the review surface.
+4. Item 5 leftovers: Anthropic prompt caching, Anthropic streaming
+   inside `respond`/`repair`, live-network smoke test.
+5. Item 4 leftover: streaming-aware `ui.assistant`, streaming the
+   repair loop.
+6. Item 3 leftovers: a "preview" review action, rename / signature
+   impact analysis.
+7. Item 2 stragglers: pytest JUnit wiring (needs tmp-file capture),
+   ESLint structured wiring.
+8. Items 9 (real LSP integration) and 10 (GitHub/CI integration)
+   are sized as their own future rounds.
 
 ---
 
