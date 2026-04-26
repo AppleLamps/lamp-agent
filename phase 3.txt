@@ -6,56 +6,55 @@ This file is the Phase 3 roadmap. Phase 2 finished with the harness able to
 safely run a full task lifecycle on small workspaces; Phase 3 turns that
 foundation into something we can point at real repositories with confidence.
 
-Items 1–8 are in flight (most have committed scaffolding plus open
-sub-bullets); items 9–10 are not started. Each item's per-section block
+Items 1–8 are complete; item 10 has its foundation in place with
+the CI-repair flow and one-click "open PR" review action still
+open; item 9 (LSP) is not started and marked optional in the spec.
+Each item's per-section block
 below has a `Status:` line and explicit `[x]` / `[~]` / `[ ]` boxes for
 the sub-bullets. The high-level checklist immediately below mirrors that.
 
 ## Resume Point For The Next Agent
 
-- **Latest completed slice:** item 8 resolver gaps closed —
-  tsconfig path aliases, Python imports, re-export traversal,
-  CommonJS / dynamic-import coverage, `.json` resource fallback.
-- **Test baseline:** `npm test` → 236 tests pass (0 skipped, 0
-  failing); `npm run test:e2e` → 15 e2e tests pass.
-- **Last two slices in order:**
-  1. Signature-change impact — `buildPrePatchPlan` scans for
-     parameter / argument / signature / return-shape requests, stores
-     `expected_scope.signature_impact`, adds affected definitions and
-     callers to candidate files, and emits `signature_impact`
-     warnings before patching.
-  2. Item 8 resolver gaps — `loadTsconfigAliases` reads
-     tsconfig.json / jsconfig.json (comment-tolerant), exposes
-     `compilerOptions.paths` + `baseUrl`, threaded through every
-     `resolveImport` caller via `codeIndex.tsconfigAliases`.
-     `resolveImport` now routes `.py` importing files to a Python
-     branch (relative dots, package `__init__.py`, `.py` modules).
-     `findSymbolCallers` and `listSymbolImpact` walk re-export
-     chains so `export { foo } from "./real"` and `export *`
-     barrels are transparent. A `.json` fallback resolves
-     `require("./config")` against `src/config.json` when no JS/TS
-     sibling exists (`buildCodeIndex` now tracks `.json` files in
-     `codeIndex.files` so the fallback can find them).
+- **Latest completed slice:** Phase 3 stragglers bundle
+  (commit `5d54686`). Closed: aliased re-export tracing,
+  structured repair-findings, preview review action, pytest
+  JUnit + ESLint structured wiring, streaming-aware assistant
+  rendering and repair-loop streaming, Anthropic prompt
+  caching, live-network smoke gate, item-10 foundation
+  (gh wrapper + four model tools + permission updates).
+- **Test baseline:** `npm test` → 261 tests (257 pass, 4 skip);
+  `npm run test:e2e` → 15 e2e pass.
+- **Phase 3 status:** items 1–8 complete; item 10 foundation in
+  place but CI-repair flow + "open PR" review action still open;
+  item 9 (LSP) not started, marked optional in the spec.
 
-- **Recommended next slice:** the highest-leverage straggler is
-  **repair-findings wiring (item 6 leftover)**.
-  `REPAIR_FINDINGS_SCHEMA` is already defined in
-  `src/model/structured-output.js`. The plan: add a
-  `requestStructuredRepair({ adapter, system, user })` helper that
-  parallels `requestStructuredPlan` / `requestStructuredEditSpec`,
-  wire it into `verifyAndRepair` so the model's repair findings
-  come back as a validated structure, persist as
-  `repair-findings.json` under the task dir, and surface on the
-  review card alongside the existing critique. Tests should sit
-  beside the existing structured-output tests.
+- **Recommended next slice:** **wire item 10's CI-repair flow**
+  on top of the foundation that just landed. Steps:
+  1. After verify still has failures AND the active task has a
+     PR (recorded as `pr.json`), call `tools.prStatus()` to
+     identify failed CI checks. For each, call
+     `tools.ciLog(runId, jobName)` to fetch the log content.
+  2. Run that log through the existing parsers from item 2:
+     try `parseStructuredOutput` first (the log usually contains
+     reporter output), fall back to `parseCheckOutput`. The
+     output shape matches local check failures exactly, so the
+     existing `summarizeFailureForRepair` and `model.repair`
+     path already accepts it.
+  3. Add a "Open PR" review-action choice that runs
+     `branchCreate` → `git push -u origin <branch>` →
+     `prCreate({ title, body })` behind a single approval prompt.
+  4. Add an e2e fixture under `test/fixtures/github/` with a
+     mocked `gh` shim (a small node script that prints scripted
+     responses based on argv) and an end-to-end test that drives
+     the open-PR + CI-repair flow without contacting GitHub.
 
-  Other open work (lower priority): aliased re-export tracing
-  (`export { foo as bar } from "..."` — the parser currently
-  drops the original name; needs a small parseJsLike change to
-  store both `name` and `original` on re-export entries),
-  Anthropic prompt caching + streaming, streaming-aware
-  `ui.assistant`, "preview" review action, pytest JUnit / ESLint
-  structured wiring, items 9 (LSP) and 10 (GitHub/CI).
+- **Other remaining work (lower priority):**
+  - Anthropic streaming inside `respond` / `repair` — the existing
+    `streamAnthropicMessage` only handles text deltas; tool_use
+    blocks during streaming need separate handling (Anthropic's
+    `content_block_delta` protocol with input_json deltas).
+  - Item 9 (real LSP integration, TypeScript first) — explicitly
+    optional in the Phase 3 spec.
 
 Current status:
 
@@ -103,9 +102,14 @@ Current status:
   map (`stack` / `import-graph` / `co-located`). The repair loop
   summarises failures via `src/checks/failure-summary.js` before
   handing them to `model.repair`, so the model sees a compact
-  structured shape instead of the full audit record. Still TBD for
-  item 2: pytest JUnit wiring (needs a tmp-file capture since pytest
-  does not write JUnit to stdout) and ESLint structured wiring.
+  structured shape instead of the full audit record. Pytest JUnit
+  XML now writes via a tmp-file capture path
+  (`pickRunnerCommand` generates the path; the runner emits with
+  `--junit-xml=<path>`; `runCheckCommand` reads it back and routes
+  through the existing `pytest-junit` parser). ESLint JSON gets a
+  dedicated `tools.runLintStructured` that bypasses the user's
+  lint script and runs eslint directly with `--format=json`,
+  routing through the existing `eslint-json` parser.
 - [~] Pre-patch blast radius and edit preview (item 3) — most of the
   surface is in place. `src/task/pre-patch-plan.js`'s
   `buildPrePatchPlan` produces an `expected_scope` (candidate files,
@@ -121,61 +125,56 @@ Current status:
   card is no longer always-on. The phase controller requires
   `pre_patch_plan` as a plan-phase output. The runtime exposes
   `previewPatch(patch)` (surfaced as the `preview_patch` model tool).
-  A `/plan` CLI shortcut prints the persisted plan. Rename and
-  signature impact now ripple through the import graph via item 8.
-  Still TBD for item 3: a "preview" review action that shows the next
-  staged patch before apply.
-- [~] Streaming wired into the CLI (item 4) — foundation in place.
-  `requestOpenRouter` routes through a new `streamOpenRouterChat`
-  helper when `modelConfig.capabilities.streaming` is true and the
-  caller passes `onToken`. The helper accumulates SSE deltas (text +
-  tool_call deltas by index) and reassembles them into the same
-  shape as the non-streaming path so the existing tool-dispatch
-  loop is unchanged. `respond` now accepts `onToken` and an
-  `AbortSignal`; the CLI passes a per-task `AbortController`, prints
-  tokens as they arrive, and `cancel task` aborts the in-flight
-  request. Aborted requests surface as `{ cancelled: true, ... }`
-  with a `model_aborted` event recorded. Locked in by three new
-  unit tests (token-and-tool-call reassembly, fallback when
-  capabilities.streaming=false, mid-stream abort). Still TBD: a
-  streaming-aware `ui.assistant` variant that renders tokens
-  inline rather than as a progress message; streaming the repair
-  loop's model calls; and surfacing tool-call announcements as a
-  thinking spinner.
-- [~] Multi-provider model adapters (item 5) — most providers now
-  land. The OpenAI-compatible transport in `src/model/openrouter.js`
-  is parameterised by `endpoint` and `extraHeaders`, so OpenAI and
-  any local server speaking the same wire format share the same code
-  via thin wrappers (`src/model/openai.js`,
-  `src/model/local.js`). Anthropic has its own implementation in
-  `src/model/anthropic.js` against the Messages API directly (no
-  SDK dep). `createModelAdapter` in `src/model/index.js` dispatches
-  by `modelConfig.provider` (`openrouter` | `openai` | `anthropic` |
-  `local`); the existing `LAMP_MODEL_ADAPTER` test-stub override
-  still wins. Locked in by 7 new unit tests covering factory
-  dispatch, the adapter contract surface, OpenAI / local URL +
-  header behaviour, and Anthropic tool-translation. Still TBD:
-  prompt caching for Anthropic (`anthropic-beta:
-  prompt-caching-2024-07-31`), Anthropic streaming inside
-  `respond`/`repair`, and a live-network smoke test gated on
-  per-provider env vars.
-- [~] Structured outputs beyond critique (item 6) — plan and
-  edit-spec land. `src/model/structured-output.js` defines
-  `PLAN_SCHEMA`, `EDIT_SPEC_SCHEMA`, and `REPAIR_FINDINGS_SCHEMA`
-  plus a small JSON-Schema-shaped `validate()` and a
-  `describeSchema()` helper used to build system prompts. Each
-  adapter (OpenAI-compatible and Anthropic) gained a `respondJson({
-  system, user })` method that returns `{ok, structured?, raw}`.
-  `src/task/structured-plan.js` and `src/task/edit-spec.js`
-  orchestrate the requests, validate the response, persist
-  `plan.json` / `edit-spec.json` under the task dir on success, and
-  silently fall back when the model is unavailable, the response
-  isn't JSON, or schema validation fails. After the alignment pass
-  the CLI only fires these when the task crosses a risky boundary
-  (`riskyBoundaries.length > 0`) — they cost a model round-trip
-  each, and on routine no-risk tasks they were not load-bearing.
-  Still TBD: a structured repair-findings flow (the schema is
-  defined; the wiring is not), and live-network smoke tests.
+  A `/plan` CLI shortcut prints the persisted plan, and a
+  `/preview` slash + "Preview pending changes" review-action choice
+  shows a unified-diff (or per-file summary on non-git workspaces)
+  before accept. Rename and signature impact ripple through the
+  import graph via item 8.
+- [x] Streaming wired into the CLI (item 4). `streamOpenRouterChat`
+  handles SSE deltas (text + tool_call deltas by index) and
+  reassembles them into the existing tool-dispatch shape.
+  `respond` accepts `onToken` and an `AbortSignal`; the CLI passes
+  a per-task `AbortController` and `cancel task` aborts in-flight.
+  Aborted requests surface as `{ cancelled: true }` with a
+  `model_aborted` event. The repair loop now streams too:
+  `verifyAndRepair` accepts `onToken` and threads it through
+  `model.repair`. Token rendering uses
+  `ui.assistantStreamHeader` / `assistantStreamFooter` so streamed
+  output flows directly to stdout without re-boxing per token. The
+  existing assistant box (`ui.assistant`) still wraps the final
+  response.message for explain-style tasks and as a fallback. The
+  remaining open piece is a "thinking" spinner that surfaces
+  tool-call announcements during streamed responses.
+- [~] Multi-provider model adapters (item 5). `createModelAdapter`
+  dispatches by `modelConfig.provider` (`openrouter` | `openai` |
+  `anthropic` | `local`); per-provider env-var defaults; the
+  OpenAI-compatible transport is parameterised by `endpoint` and
+  `extraHeaders`. Anthropic prompt caching is opt-in via
+  `model.promptCaching = true` — when enabled, the adapter sends
+  `anthropic-beta: prompt-caching-2024-07-31` and marks the
+  system prompt with `cache_control: { type: "ephemeral" }`. A
+  skipped-by-default live-network smoke test in
+  `test/live-network-smoke.test.js` runs one tiny `streamText`
+  round-trip per provider when `LAMP_LIVE_NETWORK_SMOKE=1` and
+  the matching API key are set. Still TBD: Anthropic streaming
+  inside `respond`/`repair` (text + tool_use blocks together —
+  the existing `streamAnthropicMessage` only handles text deltas;
+  tool_use blocks during streaming need separate handling for
+  Anthropic's `content_block_delta` protocol with input_json
+  deltas).
+- [x] Structured outputs beyond critique (item 6). Plan and
+  edit-spec persist as `plan.json` / `edit-spec.json` on
+  risky-boundary tasks. `src/task/repair-findings.js` exposes
+  `requestRepairFindings({ adapter, status, failedChecks,
+  attempts, activeTask })` paralleling `requestStructuredPlan`
+  and `requestStructuredEditSpec`. `verifyAndRepair` calls it
+  after the bounded loop when checks are still failing,
+  validates the response against `REPAIR_FINDINGS_SCHEMA`, and
+  persists `repair-findings.json`. The review card (`finalReview`
+  in `src/review/review.js`) reads the file and lifts the
+  diagnosis, severity, blockers, and proposed-fix steps into a
+  dedicated "Repair diagnosis:" section plus a one-line warning.
+  Locked in by 4 unit tests in `test/repair-findings.test.js`.
 - [x] Resumable tasks and cancel-in-flight (item 7) — complete for
   artifact-backed resume. Phase controller gained
   `markCancelled` and `markInterrupted` helpers; `cancelTask`
@@ -190,9 +189,12 @@ Current status:
   recorded task and continues at the next incomplete phase using
   persisted task artifacts. Remaining limitation: it does not
   resurrect a deleted temp shadow workspace after a process restart.
-- [~] Dependency-aware edits and cross-file binding (item 8) — six
-  slices land (cross-file binding, rename impact, repair import graph,
-  dependency graph, component map, signature-change impact).
+- [x] Dependency-aware edits and cross-file binding (item 8) — all
+  planned slices landed (cross-file binding, rename impact, repair
+  import graph, dependency graph, component map, signature-change
+  impact, tsconfig path aliases, Python imports, re-export
+  traversal including aliased re-exports, `.json` resource fallback,
+  CommonJS `require()` and dynamic `import()` coverage).
   `src/code/import-resolver.js` is the new shared resolver: relative-import sources resolve against the workspace
   file set with the standard `.ts/.tsx/.js/.jsx/.mjs/.cjs` extension
   list and an `index.<ext>` fallback; `src/checks/relevant-files.js`
@@ -226,10 +228,33 @@ Current status:
   wired into `buildPrePatchPlan`: parameter / argument / return-shape
   requests populate `expected_scope.signature_impact`, add definition
   and caller files to candidate scope, and block before patch when the
-  symbol has cross-file callers. Still open: tsconfig-paths alias
-  resolution and Python `from x import y` resolution.
-- [ ] Real language-server integration, TypeScript first (item 9) — not started.
-- [ ] GitHub/CI integration (item 10) — not started.
+  symbol has cross-file callers. The resolver also handles
+  tsconfig / jsconfig path aliases (loadTsconfigAliases reads the
+  config with comment + trailing-comma tolerance, threaded through
+  every resolveImport caller via codeIndex.tsconfigAliases),
+  Python `from x.y import z` against the workspace (relative dot-
+  prefixes, package __init__.py, .py modules), re-export
+  traversal including aliased re-exports
+  (`export { foo as bar } from "..."` — the parser now stores
+  `original` on re-exports and `exposesSymbol` walks chains
+  through aliases), and a `.json` resource fallback for
+  `require("./config")`. CommonJS `require()` and dynamic
+  `import()` are captured by the existing parser kinds and route
+  through the same resolver. Locked in by 18 resolver tests, 13
+  symbol-callers tests, and the rename/signature-impact tests.
+- [ ] Real language-server integration, TypeScript first (item 9) — not started; optional per the spec.
+- [~] GitHub/CI integration (item 10) — foundation complete.
+  `src/integrations/github.js` exposes `detectGh`, `branchCreate`,
+  `prCreate`, `prStatus`, `ciLog` (all routed through
+  permission-aware `runCommand`). Runtime methods, four model
+  tools (`branch_create`, `pr_create`, `pr_status`, `ci_log`),
+  phase allowedTools, and permission classifications
+  (`gh pr create`/`merge` → `external_publish`, force-push
+  blocked) all land. Locked in by 11 unit tests in
+  `test/github-integration.test.js`. Open: CI-repair flow that
+  fetches `pr_status` failures + `ci_log` and feeds parsed
+  failures into `model.repair`, a one-click "open PR" review
+  action, and an e2e fixture with a mocked `gh` shim.
 
 Where we are now:
 
@@ -300,38 +325,34 @@ Phase 3 focuses on three things on top of that foundation:
 
 ## What Is Left
 
-Items 1–8 are partially done — see the per-item sections below for the
-exact `[x]` / `[~]` / `[ ]` state. Items 9–10 are not yet started.
+Items 1–8 are complete; item 10's foundation (gh wrapper + four
+tools + permissions) landed. The remaining open work is the
+CI-repair flow and "open PR" review action under item 10, plus
+item 9 (LSP, optional per the spec).
 
 Recommended next steps in priority order:
 
-1. **Repair-findings wiring (item 6 leftover).** This is the
-   recommended next slice. `REPAIR_FINDINGS_SCHEMA` is already
-   defined in `src/model/structured-output.js`; add a
-   `requestStructuredRepair` helper that parallels
-   `requestStructuredPlan` / `requestStructuredEditSpec`, call
-   it from `verifyAndRepair`, persist the validated payload as
-   `repair-findings.json` under the task dir, and surface the
-   findings on the review card alongside the existing critique.
-2. Remaining item 8 leftover: aliased re-export tracing
-   (`export { foo as bar } from "..."`). The parser
-   (`parseJsLike` in `src/code/code-index.js`, around the
-   `export\s+\{...\}\s*from` branch) currently records the
-   exposed name only; it needs to also store the original. Then
-   `resolvesToDefiningFile` should match either name when
-   walking re-exports.
-3. Item 5 leftovers: Anthropic prompt caching
-   (`anthropic-beta: prompt-caching-2024-07-31`), Anthropic
-   streaming inside `respond`/`repair`, live-network smoke test.
-4. Item 4 leftover: streaming-aware `ui.assistant`, streaming
-   the repair loop's model calls.
-5. Item 3 leftover: a "preview" review action that shows the next
-   staged patch before apply.
-6. Item 2 stragglers: pytest JUnit wiring (needs tmp-file
-   capture, since pytest doesn't write JUnit to stdout) and
-   ESLint structured wiring.
-7. Items 9 (real LSP integration) and 10 (GitHub/CI integration)
-   are sized as their own future rounds.
+1. **Item 10 — wire the CI-repair flow.** When `pr_status` shows
+   failures, fetch each failed job's `ci_log`, run the existing
+   parsers from item 2 against the log content
+   (`parseStructuredOutput` first, fall back to
+   `parseCheckOutput`), and feed the resulting structured failures
+   into `model.repair`. Pair this with a one-click "open PR" review
+   action that runs `branchCreate` → `git push -u origin <branch>`
+   → `prCreate({ title, body })` behind a single approval prompt.
+   Add a `test/fixtures/github/` mocked `gh` shim plus an e2e
+   test.
+2. **Item 5 leftover** — Anthropic streaming inside
+   `respond`/`repair`. The text-only `streamAnthropicMessage`
+   already exists; what's missing is handling of `tool_use`
+   `content_block_delta` events (with `input_json` deltas) so
+   tool calls emerge from the stream. Until this lands, Anthropic
+   responses are non-streaming for the `respond`/`repair` paths.
+3. **Item 4 polish** — surface tool-call announcements as a
+   "thinking" spinner during streamed responses.
+4. **Item 9 — real LSP integration**, TypeScript first.
+   Explicitly optional per the spec. Sized as its own future
+   round; see the per-item section below for the design.
 
 ---
 
