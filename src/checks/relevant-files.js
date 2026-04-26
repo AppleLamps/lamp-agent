@@ -13,6 +13,7 @@
 //   - "co-located"   → file matches the test file by name (.test./.spec. dropped)
 
 import path from "node:path";
+import { resolveImport } from "../code/import-resolver.js";
 
 // A file qualifies as a "test file" if its name marks it as a test
 // (`.test.`/`.spec.`/`_test.`) OR it lives inside a directory commonly
@@ -141,25 +142,7 @@ function coLocatedCandidates(testFile, fileSet) {
 }
 
 function resolveRelativeImport({ from, source, fileSet }) {
-  if (!source.startsWith(".")) return null;
-  const fromDir = path.posix.dirname(normalize(from));
-  const joined = path.posix.normalize(`${fromDir}/${source}`);
-  // 1) Try the path with each known extension appended.
-  if (path.posix.extname(joined) && fileSet.has(joined)) {
-    return joined;
-  }
-  for (const ext of JS_TS_EXTS) {
-    const candidate = `${joined}${ext}`;
-    if (fileSet.has(candidate)) return candidate;
-  }
-  // 2) Try `<joined>/index.<ext>`.
-  for (const ext of JS_TS_EXTS) {
-    const candidate = `${joined}/index${ext}`;
-    if (fileSet.has(candidate)) return candidate;
-  }
-  // 3) If the path already had an extension and matches as-is.
-  if (fileSet.has(joined)) return joined;
-  return null;
+  return resolveImport({ from, source, fileSet });
 }
 
 function priorityScore(tags) {

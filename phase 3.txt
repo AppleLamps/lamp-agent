@@ -144,17 +144,39 @@ Current status:
   <task-id>` (requires extracting the task lifecycle into a
   function so a partially-completed task can pick up at the next
   not-completed phase).
-- [ ] Dependency-aware edits and cross-file binding (item 8) — not started.
+- [~] Dependency-aware edits and cross-file binding (item 8) — first
+  pieces land. `src/code/import-resolver.js` is the new shared
+  resolver: relative-import sources resolve against the workspace
+  file set with the standard `.ts/.tsx/.js/.jsx/.mjs/.cjs` extension
+  list and an `index.<ext>` fallback; `src/checks/relevant-files.js`
+  was rewritten to call it instead of duplicating the logic.
+  `findSymbolCallers({ cwd, codeIndex, symbol })` and
+  `findSymbolDependencies({ codeIndex, file })` in
+  `src/code/code-index.js` walk the imports map: callers respect
+  named, aliased (`import { foo as bar }`), default, and namespace
+  imports, and only return files that import the symbol from one of
+  its actual defining files (not just any file with a same-named
+  export). Reference scanning uses the local alias, not the
+  exported name. Both functions are exposed as
+  `tools.findSymbolCallers` / `tools.findSymbolDependencies` and as
+  the `symbol_callers` / `symbol_dependencies` model tools. Triage
+  and patch `allowedTools` were updated to admit them. Locked in by
+  `test/import-resolver.test.js` (7 tests) and
+  `test/symbol-callers.test.js` (7 tests). Still open:
+  `dependency_graph(path?)` aggregator, `component_map()` tool,
+  pre-patch impact analysis on rename / signature changes,
+  repair-loop integration that hands the import graph of the
+  failing test to `model.repair`, tsconfig-paths alias resolution,
+  and Python `from x import y` resolution.
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
 - [ ] GitHub/CI integration (item 10) — not started.
 
 Where we are now:
 
-- Latest verified baseline: `npm test` passes with 190 tests
-  (includes the e2e suite). `npm run test:e2e` runs 14 end-to-end
+- Latest verified baseline: `npm test` passes with 205 unit tests
+  (1 skipped, 0 failing). `npm run test:e2e` runs 14 end-to-end
   tests against four fixture repositories. Latest pushed commit:
-  `b4e910f Land cancellation, listing, and alt-approach belief
-  (Phase 3 item 7)` on `main`.
+  `957efa5 Update handoff documentation` on `main`.
 - The Phase 2 baseline (seven-phase lifecycle, structured task
   artifacts, snapshot-based undo, shadow workspace, regex
   code-intel, targeted check runner, bounded repair loop, styled
@@ -227,7 +249,11 @@ Recommended next steps in priority order:
    `runTaskLifecycle({...})` function so a partially-completed
    task picks up at the next not-completed phase using artifacts
    already on disk.
-2. Item 8: dependency-aware edits and cross-file binding.
+2. Item 8 leftovers: pre-patch impact analysis on rename /
+   signature changes, repair-loop integration that passes the
+   import graph of the failing test into `model.repair`, the
+   `dependency_graph` aggregator, the `component_map` tool,
+   tsconfig-paths alias resolution, and Python resolution.
 3. Item 6 leftover: wire `repair_findings` (schema is defined)
    into `verifyAndRepair` and the review surface.
 4. Item 5 leftovers: Anthropic prompt caching, Anthropic streaming
@@ -811,7 +837,11 @@ finished.
 
 ## 8. Dependency-Aware Edits And Cross-File Binding
 
-Status: not started. Code intelligence is regex-based and per-file.
+Status: in progress. Cross-file binding and the two foundational
+tools (`symbol_callers`, `symbol_dependencies`) land this round;
+`dependency_graph`, `component_map`, pre-patch rename impact,
+repair-loop integration, tsconfig-paths, and Python resolution are
+still open.
 
 ### Goal
 
@@ -821,27 +851,73 @@ breakage.
 
 ### Add
 
-- [ ] Cross-file binding: extend `src/code/code-index.js` so imports resolve
-  to defining files, not just source-string matches. For ESM/CommonJS, walk
-  `imports`/`require` arguments through the workspace path resolution rules.
-  For Python, resolve `from x import y` against the package layout.
-- [ ] New tools:
-  - `symbol_callers(name)` — every reference grouped by file with source
-    snippets.
-  - `symbol_dependencies(file)` — the transitive imports of a file with one
-    level of resolved targets.
-  - `dependency_graph(path?)` — the long-deferred aggregator for the import
-    graph (Phase 2 left this implicit).
-  - `component_map()` — React component discovery (the only Phase 2 code-intel
-    tool not built).
+- [~] Cross-file binding: extend `src/code/code-index.js` so imports resolve
+  to defining files, not just source-string matches.
+  - [x] Shared `src/code/import-resolver.js` resolves relative ESM
+        sources against a `Set<string>` of workspace-relative paths,
+        with the standard `.ts/.tsx/.js/.jsx/.mjs/.cjs` extension
+        list and a `<dir>/index.<ext>` fallback. Bare specifiers
+        (`lodash`, `@scope/pkg`) and absolute paths return null.
+  - [x] `findSymbolCallers` walks the imports map and only counts a
+        file as a caller when its import source resolves to one of
+        the symbol's defining files. Honors named imports, aliased
+        imports (`import { foo as bar }`), default imports
+        (verifies the resolved file declares a default export),
+        and namespace imports (`import * as ns; ns.foo()`).
+        Reference scanning uses the local alias when present, and
+        files that only mention the name in a comment or string
+        without importing it are not flagged as callers.
+  - [x] `findSymbolDependencies` returns a file's imports with each
+        source resolved (or null for bare specifiers), plus
+        `internal_count` / `external_count` summary counts.
+  - [ ] tsconfig-paths / `paths` alias resolution.
+  - [ ] CommonJS `require()` argument resolution.
+  - [ ] Python `from x import y` resolution against the package
+        layout.
+- [~] New tools:
+  - [x] `symbol_callers(name)` — wired through
+        `tools.findSymbolCallers` and the `symbol_callers` model
+        tool (`TOOL_DEFINITIONS` entry + dispatcher case in
+        `src/model/openrouter.js`). Triage and patch `allowedTools`
+        admit it.
+  - [x] `symbol_dependencies(file)` — wired through
+        `tools.findSymbolDependencies` and the `symbol_dependencies`
+        model tool, with `allowedTools` updated identically.
+  - [ ] `dependency_graph(path?)` — aggregator across the whole
+        workspace.
+  - [ ] `component_map()` — React component discovery.
 - [ ] Pre-patch impact analysis: when the model is about to rename or change
   the signature of an exported symbol, the pre-patch plan from item 3
   enumerates affected files and prompts before the change lands.
 - [ ] Repair-loop hint: pass the resolved import graph of the failing test
   into `model.repair` so the model edits the right source file on the first
   attempt.
-- [ ] Tests on real fixtures with imports across folders, default vs named
-  imports, re-exports, and dynamic imports.
+- [x] Tests with imports across folders, default vs named imports, and
+  files that only mention the name without importing it
+  (`test/import-resolver.test.js` — 7 tests;
+  `test/symbol-callers.test.js` — 7 tests). Re-export and dynamic-
+  import coverage is open.
+
+### Notes for the next agent
+
+- `findSymbolCallers` deliberately resolves the import source
+  through `resolveImport`, not by string equality with the
+  defining file's path. That's what makes it possible to import
+  `login` from `../auth/login` in one file and `login` from
+  `../billing/login` in another and have each caller correctly
+  attributed to its own definition file (see the third test in
+  `test/symbol-callers.test.js`).
+- For namespace imports, `importLocalName` returns the namespace
+  name (`ns`) rather than the symbol's name. Reference scanning
+  then matches `ns.<symbol>` rather than a bare `<symbol>(...)`,
+  which avoids false positives on unrelated locals.
+- The shared resolver's signature accepts either a `Set` or any
+  iterable for `fileSet`; `findSymbolCallers` builds a Set once
+  per call and reuses it across all imports in the workspace.
+- `src/checks/relevant-files.js` was migrated to import
+  `resolveImport` from the shared module. The previous
+  `resolveRelativeImport` is now a one-line delegate so existing
+  callers (and their tests) keep working unchanged.
 
 ### Definition Of Done
 

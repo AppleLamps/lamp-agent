@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { resolveImport } from "./import-resolver.js";
 
 const JS_TS_EXTS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx"]);
 const PY_EXTS = new Set([".py"]);
@@ -68,6 +69,148 @@ export async function buildCodeIndex({ cwd, files }) {
   }
 
   return { files: indexed, symbols, imports, exports: exports_, defsByName, skipped };
+}
+
+/**
+ * Find files that import a symbol from one of its defining files,
+ * and the lines inside those importing files where the local name
+ * is referenced. Unlike `findReferences` (which is a workspace-wide
+ * regex scan over the identifier), this routes through the import
+ * graph: a file is only a "caller" when it actually imports the
+ * symbol from its definition. Honors aliased imports
+ * (`import { login as loginUser }`) by scanning for the local name
+ * in the importing file rather than the original.
+ *
+ * @param {object} args
+ * @param {string} args.cwd
+ * @param {object} args.codeIndex
+ * @param {string} args.symbol
+ * @returns {Promise<{ok: true, symbol, definitions, callers}|{ok:false, message}>}
+ */
+export async function findSymbolCallers({ cwd, codeIndex, symbol }) {
+  const ident = String(symbol || "").trim();
+  if (!ident || !/^[A-Za-z_$][\w$]*$/.test(ident)) {
+    return { ok: false, message: "Symbol must be a single identifier (letters, digits, _ or $)." };
+  }
+  const definitions = codeIndex?.defsByName?.get(ident) || [];
+  const definingFiles = new Set(definitions.map((entry) => entry.file));
+
+  const fileSet = new Set(codeIndex?.files || []);
+  const importsByFile = codeIndex?.imports || new Map();
+  const callers = [];
+
+  for (const [importingFile, imports] of importsByFile) {
+    for (const importEntry of imports) {
+      const resolved = resolveImport({
+        from: importingFile,
+        source: importEntry?.source || "",
+        fileSet
+      });
+      if (!resolved) continue;
+
+      // Determine whether this import statement actually brings the
+      // target symbol into the importing file. Default imports match
+      // when the source file has a default export and the symbol is
+      // its default name; named imports match when the symbol's
+      // exported name appears on the import statement; namespace
+      // imports always pull in every export.
+      const localName = importLocalName(importEntry, ident, resolved, codeIndex);
+      if (!localName) continue;
+
+      // Only files that import the symbol from one of its defining
+      // files count as true callers. Without this, an exported name
+      // shared by two modules (e.g. two `init` functions) would
+      // bleed across them.
+      if (definingFiles.size > 0 && !definingFiles.has(resolved)) continue;
+
+      // Scan the importing file body for word-boundary matches of the
+      // local name. Skip the import statement's own line.
+      const lines = await readWorkspaceLines(cwd, importingFile);
+      const re = new RegExp(`\\b${escapeRegex(localName)}\\b`);
+      const references = [];
+      for (let i = 0; i < lines.length; i += 1) {
+        const lineNumber = i + 1;
+        if (lineNumber === importEntry.line) continue;
+        if (re.test(lines[i])) {
+          references.push({ line: lineNumber, text: lines[i].trim() });
+        }
+      }
+      callers.push({
+        file: importingFile,
+        import_line: importEntry.line,
+        local_name: localName,
+        resolved_from: resolved,
+        references
+      });
+    }
+  }
+
+  return {
+    ok: true,
+    symbol: ident,
+    definitions,
+    callers
+  };
+}
+
+/**
+ * For a given file, return its imports with each `source` resolved
+ * to a workspace-relative path when possible. Bare specifiers (npm
+ * packages) appear with `resolved: null`.
+ */
+export function findSymbolDependencies({ codeIndex, file }) {
+  const norm = String(file || "").replaceAll("\\", "/");
+  const imports = codeIndex?.imports?.get(norm) || [];
+  const fileSet = new Set(codeIndex?.files || []);
+  const dependencies = imports.map((entry) => ({
+    source: entry.source,
+    line: entry.line,
+    kind: entry.kind,
+    names: entry.names,
+    resolved: resolveImport({ from: norm, source: entry.source || "", fileSet })
+  }));
+  const internalCount = dependencies.filter((entry) => entry.resolved).length;
+  return {
+    ok: true,
+    file: norm,
+    dependencies,
+    internal_count: internalCount,
+    external_count: dependencies.length - internalCount
+  };
+}
+
+function importLocalName(importEntry, exportedName, resolvedFile, codeIndex) {
+  const names = importEntry?.names || [];
+  for (const entry of names) {
+    if (entry.kind === "named") {
+      // `original` is the exported name when the import uses an alias.
+      const exportName = entry.original || entry.name;
+      if (exportName === exportedName) return entry.name;
+    } else if (entry.kind === "default") {
+      // The local default-import name satisfies any default export.
+      // Verify the resolved file actually exports a default.
+      const exports = codeIndex?.exports?.get(resolvedFile) || [];
+      const hasDefault = exports.some((e) => e.kind === "default" || e.name === "default");
+      if (hasDefault && entry.name === exportedName) return entry.name;
+    } else if (entry.kind === "namespace") {
+      // `import * as ns from "./mod"` brings every export under `ns`.
+      // The local name to search for in the file body is `ns.exportedName`,
+      // but our regex is identifier-only — we report the namespace
+      // identifier so the caller can see the file is a likely user.
+      return entry.name;
+    }
+  }
+  return null;
+}
+
+async function readWorkspaceLines(cwd, relative) {
+  try {
+    const content = await readFile(path.resolve(cwd, relative), "utf8");
+    if (content.length > MAX_FILE_BYTES) return [];
+    return content.split(/\r?\n/);
+  } catch {
+    return [];
+  }
 }
 
 /**

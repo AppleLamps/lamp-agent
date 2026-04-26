@@ -355,6 +355,34 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "symbol_callers",
+      description: "Find every workspace file that imports a symbol from one of its defining files, with the lines inside those files where the local name is referenced. Routes through the import graph (default / named / aliased / namespace imports) rather than a regex sweep, so it is accurate enough to use before a rename or signature change.",
+      parameters: {
+        type: "object",
+        required: ["symbol"],
+        properties: {
+          symbol: { type: "string", description: "Exact identifier of the symbol whose callers you want." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "symbol_dependencies",
+      description: "List every import declared in a workspace file with each source resolved to its target workspace path when possible. Bare npm-package specifiers appear with resolved: null.",
+      parameters: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string", description: "Workspace-relative path of the file." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "route_map",
       description: "Detect HTTP routes in the workspace. Covers Express/Fastify/Koa-style app.METHOD calls, React Router <Route path>, and Next.js pages/ and app/ file routes.",
       parameters: { type: "object", properties: {} }
@@ -1218,6 +1246,10 @@ export async function executeTool(name, args, { tools, activeTask, allowedTools 
       return tools.findImports(args.path);
     case "find_exports":
       return tools.findExports(args.path);
+    case "symbol_callers":
+      return tools.findSymbolCallers(args.symbol);
+    case "symbol_dependencies":
+      return tools.findSymbolDependencies(args.path);
     case "route_map":
       return tools.routeMap();
     case "detect_test_runner":

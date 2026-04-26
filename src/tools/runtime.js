@@ -11,7 +11,13 @@ import { parseStructuredOutput } from "../checks/structured-reporter.js";
 import { mapFailedTestsToSources } from "../checks/relevant-files.js";
 import { detectTestRunner, findRelatedTestFiles } from "../checks/test-runner-detector.js";
 import { appendEvent } from "../log/event-log.js";
-import { buildCodeIndex, detectRoutes, findReferences as findReferencesIndex } from "../code/code-index.js";
+import {
+  buildCodeIndex,
+  detectRoutes,
+  findReferences as findReferencesIndex,
+  findSymbolCallers as findSymbolCallersIndex,
+  findSymbolDependencies as findSymbolDependenciesIndex
+} from "../code/code-index.js";
 
 const IGNORED_DIRS = new Set([".git", "node_modules", ".agent", "dist", "build", ".next", "coverage"]);
 
@@ -665,6 +671,28 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
       const normalized = relativePath.replaceAll("\\", "/");
       const list = index.exports.get(normalized) || [];
       return { ok: true, path: normalized, exports: list };
+    },
+
+    /**
+     * Find every workspace file that imports the symbol from one of
+     * its defining files, plus the lines inside those files where
+     * the local name is referenced. Routes through the code index's
+     * import graph rather than a regex sweep — accurate enough to
+     * power "what calls login()?" before a rename.
+     */
+    async findSymbolCallers(symbol) {
+      const index = await getCodeIndex();
+      return findSymbolCallersIndex({ cwd, codeIndex: index, symbol });
+    },
+
+    /**
+     * For a given workspace file, list its imports with each source
+     * resolved to a workspace path when possible (bare npm specifiers
+     * appear with resolved: null).
+     */
+    async findSymbolDependencies(relativePath) {
+      const index = await getCodeIndex();
+      return findSymbolDependenciesIndex({ codeIndex: index, file: relativePath });
     },
 
     async routeMap() {
