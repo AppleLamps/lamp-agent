@@ -928,6 +928,18 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
   if (options.tools !== false) {
     body.tools = filterToolDefinitions(options.allowedTools);
     body.tool_choice = "auto";
+    // Cache the tools array when routing to a Claude model with
+    // prompt caching opted in. OpenRouter passes the cache_control
+    // marker through to Anthropic; non-Claude providers ignore the
+    // unknown field. The ~4-5K tokens of tool schemas are the same
+    // every turn, so caching them is a real cost win on long sessions.
+    if (modelConfig.promptCaching && /claude-/i.test(model) && body.tools.length) {
+      const last = body.tools[body.tools.length - 1];
+      body.tools = [
+        ...body.tools.slice(0, -1),
+        { ...last, cache_control: { type: "ephemeral" } }
+      ];
+    }
   }
   if (options.jsonSchema?.schema) {
     // Strict JSON-Schema enforcement (OpenAI / OpenRouter format).
@@ -945,6 +957,17 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
     body.provider = { ...(body.provider || {}), require_parameters: true };
   } else if (options.jsonMode && modelConfig.capabilities?.jsonMode) {
     body.response_format = { type: "json_object" };
+  }
+  // OpenRouter middle-out compression for long sessions. Default on
+  // for OpenRouter routes, configurable via `model.contextCompression`
+  // in `.agent/config.json`. Non-OpenRouter providers (OpenAI direct,
+  // Anthropic direct, local) ignore unknown plugin entries — but we
+  // skip the field for them anyway to keep request bodies clean.
+  if (
+    (modelConfig.provider || "openrouter") === "openrouter"
+    && modelConfig.contextCompression !== false
+  ) {
+    body.plugins = [{ id: "context-compression" }];
   }
 
   const response = await fetch(resolveEndpoint(modelConfig), {
@@ -979,6 +1002,13 @@ async function streamOpenRouterChat(apiKey, modelConfig, model, messages, option
   if (options.tools !== false) {
     body.tools = filterToolDefinitions(options.allowedTools);
     body.tool_choice = "auto";
+    if (modelConfig.promptCaching && /claude-/i.test(model) && body.tools.length) {
+      const last = body.tools[body.tools.length - 1];
+      body.tools = [
+        ...body.tools.slice(0, -1),
+        { ...last, cache_control: { type: "ephemeral" } }
+      ];
+    }
   }
   if (options.jsonMode && modelConfig.capabilities?.jsonMode) {
     body.response_format = { type: "json_object" };
@@ -989,6 +1019,14 @@ async function streamOpenRouterChat(apiKey, modelConfig, model, messages, option
   // is harmless on OpenRouter and load-bearing on the local-server
   // path, so we keep it.
   body.stream_options = { include_usage: true };
+  // Context compression for long streaming sessions — same gate as
+  // the non-streaming path.
+  if (
+    (modelConfig.provider || "openrouter") === "openrouter"
+    && modelConfig.contextCompression !== false
+  ) {
+    body.plugins = [{ id: "context-compression" }];
+  }
 
   const response = await fetch(resolveEndpoint(modelConfig), {
     method: "POST",

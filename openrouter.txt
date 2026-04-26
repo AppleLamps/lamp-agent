@@ -1,0 +1,224 @@
+# OpenRouter / Adapter Improvements
+
+Plan for the seven improvements identified after reviewing
+https://openrouter.ai/docs/ against the codebase. Tracked here so we
+don't lose them across sessions. Top of file is the checklist; each
+item below has the why, the how, and the test/pitfall notes.
+
+## Checklist
+
+- [x] 1. Cache tool schemas (cost)
+- [x] 2. Narrow tools and skip extras for explain-style tasks
+- [x] 3. OpenRouter `context-compression` plugin for long sessions
+- [ ] 4. Extended thinking / reasoning, opt-in
+- [ ] 5. System prompt should include `cwd` and platform
+- [ ] 6. Denial-escalation pattern
+- [ ] 7. Conversation memory across sessions / `/resume`
+
+---
+
+## 1. Cache tool schemas
+
+**Why.** 43 tool definitions add ~4-5K tokens sent on every turn. Over
+a 30-step coding session that's ~150K tokens of pure schema repetition.
+Anthropic supports `cache_control` on the tools array
+(https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching);
+OpenRouter passes that marker through when routing to Claude. OpenAI /
+Gemini / DeepSeek auto-cache when static content sits at the front of
+the request, which it already does for us. **Concrete win: 30-50% cost
+reduction on long sessions when the underlying model is Claude.**
+
+**How.**
+- Anthropic adapter (`src/model/anthropic.js`): when
+  `modelConfig.promptCaching` is true, append
+  `cache_control: { type: "ephemeral" }` to the LAST entry of the
+  tools array (one breakpoint covers system + all tools).
+- OpenRouter adapter (`src/model/openrouter.js`): when the configured
+  model is a Claude variant (`/claude-/i.test(modelConfig.model)`) AND
+  `modelConfig.promptCaching` is true, do the same — OpenRouter passes
+  it through. Non-Claude routes ignore unknown fields safely.
+- Document the opt-in in README's config section.
+
+**Tests.** Extend `test/multi-provider-adapters.test.js`: assert the
+last tool entry has `cache_control` when caching is enabled, and
+doesn't when it's off.
+
+**Pitfalls.** `filterToolDefinitions(allowedTools)` returns different
+subsets per phase, so the cached prefix differs across phases. That's
+fine — Anthropic caches per-prefix; we just won't share a cache block
+across triage / patch / verify. For OpenAI's auto-cache the per-phase
+schemas still hit the 1024-token threshold each.
+
+---
+
+## 2. Narrow tools and skip extras for explain-style tasks
+
+**Why.** `isExplain` is detected up front (the user typed "why does
+…", "where is …", etc.) and we already short-circuit verify / critique
+/ review for it. But the patch-phase respond call still hands the full
+43-tool schema. The model doesn't need `apply_patch`, `delete_file`,
+`branch_create`, etc. to answer "explain how auth works" — sending the
+schema just slows the request and risks the model picking a write tool
+by accident.
+
+**How.**
+- Define `EXPLAIN_ALLOWED_TOOLS` in `src/task/phase-controller.js`:
+  read-only tools only — `read_file`, `search_files`, `find_symbols`,
+  `find_definition`, `find_references`, `find_imports`, `find_exports`,
+  `symbol_callers`, `symbol_dependencies`, `dependency_graph`,
+  `component_map`, `route_map`, `git_status`, `git_diff`, `list_files`.
+- In `src/index.js` patch-phase respond call, switch
+  `allowedTools: isExplain ? EXPLAIN_ALLOWED_TOOLS : TASK_PHASES.patch.allowedTools`.
+- Same change in the resume path.
+
+**Tests.** Add an e2e assertion that an explain task's commands.jsonl
+has no write-tool entries. Extend the explain-style e2e test.
+
+**Pitfalls.** None significant — explain tasks today already don't
+write files (the model just answers), so this is mostly defense in
+depth + token savings.
+
+---
+
+## 3. OpenRouter `context-compression` plugin
+
+**Why.** Real coding sessions easily produce 50K+ tokens of message
+history (file contents in tool results, repeated reads, etc.). Today
+if a session exceeds the model's context window, OpenRouter returns
+an error and we have no graceful recovery. The
+`context-compression` plugin
+(https://openrouter.ai/docs/guides/features/message-transforms) does
+middle-out compression automatically — LLMs pay less attention to the
+middle of a long context anyway, so dropping mid-conversation tool
+results is a reasonable tradeoff.
+
+**How.**
+- In `callOpenRouter` and `streamOpenRouterChat`, add
+  `body.plugins = [{ id: "context-compression" }]` when the provider
+  is OpenRouter and `modelConfig.contextCompression !== false`.
+- Default on for OpenRouter; let users disable via
+  `model.contextCompression: false` in `.agent/config.json`.
+
+**Tests.** Unit test that the request body includes the plugin entry
+for OpenRouter routes and skips it for OpenAI / local / Anthropic.
+
+**Pitfalls.** Compression can drop tool results the model later
+references. If we see the model getting confused on long sessions,
+we can switch to disabled-by-default and document the opt-in.
+
+---
+
+## 4. Extended thinking / reasoning, opt-in
+
+**Why.** For hard tasks (flaky-test debugging, refactor design,
+performance work) Claude's extended thinking and OpenAI's o-series
+reasoning produce meaningfully better outcomes. Routine "fix this
+typo" tasks don't need it.
+
+**How.**
+- Add `model.reasoning` to config:
+  `{ effort: "low" | "medium" | "high", max_tokens, exclude }`.
+- OpenRouter accepts a `reasoning` field on the request body
+  (https://openrouter.ai/docs/use-cases/reasoning-tokens). Pass it
+  through.
+- For Anthropic direct: translate to
+  `thinking: { type: "enabled", budget_tokens }`.
+
+**Tests.** Mock-fetch test asserting the `reasoning` field shows up in
+the request body when configured.
+
+**Pitfalls.** Reasoning tokens count against budget and add latency.
+Default off; document the cost trade-off.
+
+---
+
+## 5. System prompt should include cwd and platform
+
+**Why.** Codex and Claude Code both inject "Working directory: …" and
+"Platform: darwin / win32 / linux" into their system prompt. We don't.
+On Windows the model sometimes proposes `rm -rf` (POSIX-only) instead
+of `Remove-Item`. Two extra lines fix a class of cross-platform
+glitches.
+
+**How.**
+- In both adapters, when building the messages array prepend a short
+  preamble after `SYSTEM_PROMPT`:
+  `Working directory: <cwd>\nPlatform: <process.platform>` (passed in
+  from the caller — runtime knows the cwd already).
+- Or thread `cwd` / `platform` into the user message; either works.
+
+**Tests.** Mock-fetch assertion that the system content contains
+"Working directory:" and "Platform:".
+
+**Pitfalls.** None.
+
+---
+
+## 6. Denial-escalation pattern
+
+**Why.** When the user denies an approval, the model gets
+`tool_result: { denied: true }` and frequently retries the same
+operation with slightly different args. Frustrating UX.
+
+**How.**
+- Track consecutive denials per task in the runtime (or in the loop
+  in `respond` / `repair`). When two denials of the same tier occur
+  back-to-back, append a synthesized system-style message to the
+  conversation: *"The user has now denied this approach twice. Stop
+  attempting it; either propose a fundamentally different path or ask
+  the user a clarifying question."*
+- The existing alternate-approach-belief flow already records
+  constraint beliefs on alt-requested denials. This is the runtime
+  counterpart for "two denials, no alt requested."
+
+**Tests.** Stub two consecutive permission denials; assert the third
+respond() iteration's message history includes the escalation note.
+
+**Pitfalls.** Don't escalate on legitimate diversity (e.g. denying
+`gh pr create` then approving `git push` — different operations). Key
+the dedupe on tier + tool name.
+
+---
+
+## 7. Conversation memory across sessions / `/resume`
+
+**Why.** Each `node ./src/index.js` is a fresh chat. For a multi-hour
+debug session, this is the biggest UX gap vs. Claude Code (which
+persists). The phase artifacts already record `assistant_response`
+events; we just don't replay them when `/resume` runs.
+
+**How.**
+- In `runResumeLifecycle`, when patch phase resumes, hydrate the last
+  N (say 3) user/assistant turns from `events.jsonl` back into the
+  messages array before issuing the next respond().
+- Token budget: cap replayed history at, say, 20K tokens; oldest
+  turns dropped first. Reuse the OpenRouter context-compression
+  plugin (item 3) as a backstop for overflow.
+
+**Tests.** E2E: create task, get one assistant response, kill the
+process, `/resume`, verify the next respond's message history contains
+the prior assistant turn.
+
+**Pitfalls.** Tool-call IDs don't round-trip across processes; if we
+replay raw assistant messages with tool_calls, the follow-up tool
+results won't be paired correctly. Solution: replay only the assistant
+TEXT (drop tool_calls and tool results from replayed history) or
+elide the tool exchange entirely and only replay the final
+assistant text.
+
+---
+
+## Status log
+
+(Append entries here as items land. Newest at the top.)
+
+- **Items 1, 2, 3 landed.** Tool schemas now carry
+  `cache_control: { type: "ephemeral" }` on the last entry when
+  `model.promptCaching` is on AND the route is Claude (Anthropic
+  direct or `/claude-/i.test(model)` via OpenRouter). Explain-style
+  tasks use `EXPLAIN_ALLOWED_TOOLS` (15 read-only tools) instead of
+  the full 22-tool patch set, in both the main loop and
+  `runResumeLifecycle`. OpenRouter routes default-on the
+  `context-compression` plugin; disable per-config via
+  `model.contextCompression: false`. Test count: 265 unit
+  (261 pass + 4 skip) + 15 e2e.

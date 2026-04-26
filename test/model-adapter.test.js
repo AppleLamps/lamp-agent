@@ -103,6 +103,201 @@ test("OpenRouter adapter sends fallback list in body.models for native fallback"
   }
 });
 
+test("OpenRouter adapter marks last tool with cache_control when routing to Claude with promptCaching", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-cache-"));
+  const activeTask = { id: "task-cache", dir: path.join(cwd, ".agent", "tasks", "task-cache") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let requestBody = null;
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "Done." } }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 }
+        })
+      };
+    };
+
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "anthropic/claude-3-5-sonnet",
+      promptCaching: true,
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      tools: {},
+      activeTask
+    });
+    assert.ok(Array.isArray(requestBody.tools) && requestBody.tools.length > 0);
+    const lastTool = requestBody.tools[requestBody.tools.length - 1];
+    assert.deepEqual(lastTool.cache_control, { type: "ephemeral" });
+    const earlierWithCache = requestBody.tools.slice(0, -1).filter((t) => t.cache_control);
+    assert.equal(earlierWithCache.length, 0, "only the last tool should carry cache_control");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter adapter does NOT mark cache_control when routing to non-Claude models", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-nocache-"));
+  const activeTask = { id: "task-nocache", dir: path.join(cwd, ".agent", "tasks", "task-nocache") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let requestBody = null;
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "Done." } }],
+          usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 }
+        })
+      };
+    };
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      promptCaching: true,
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      tools: {},
+      activeTask
+    });
+    const withCache = (requestBody.tools || []).filter((t) => t.cache_control);
+    assert.equal(withCache.length, 0, "non-Claude routes must not get cache_control markers");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter adapter sends context-compression plugin by default and honors disable flag", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-compress-"));
+  const activeTask = { id: "task-compress", dir: path.join(cwd, ".agent", "tasks", "task-compress") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  const bodies = [];
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        })
+      };
+    };
+
+    const onAdapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await onAdapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      tools: {},
+      activeTask
+    });
+    assert.deepEqual(bodies[0].plugins, [{ id: "context-compression" }]);
+
+    const offAdapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      contextCompression: false,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await offAdapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      tools: {},
+      activeTask
+    });
+    assert.equal(bodies[1].plugins, undefined, "disabled flag should drop the plugins entry");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenAI adapter does NOT send the OpenRouter context-compression plugin", async () => {
+  const { createOpenAIAdapter } = await import("../src/model/openai.js");
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-openai-"));
+  const activeTask = { id: "task-oai", dir: path.join(cwd, ".agent", "tasks", "task-oai") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  let body = null;
+  try {
+    process.env.OPENAI_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        })
+      };
+    };
+    const adapter = createOpenAIAdapter({
+      provider: "openai",
+      model: "gpt-4o-mini",
+      apiKeyEnv: "OPENAI_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      tools: {},
+      activeTask
+    });
+    assert.equal(body.plugins, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("assertModelAdapter reports missing methods", () => {
   assert.throws(
     () => assertModelAdapter({ respond() {} }),

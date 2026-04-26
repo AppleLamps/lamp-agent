@@ -22,7 +22,7 @@ import { createTerminalUi } from "./ui/terminal.js";
 import { createInteractivePrompts } from "./ui/interactive.js";
 import { verifyAndRepair } from "./verify/repair-loop.js";
 import { refreshProjectMemory } from "./memory/project-memory.js";
-import { buildTaskPlan, identifyRiskyBoundaries, initializePhaseController, TASK_PHASES } from "./task/phase-controller.js";
+import { buildTaskPlan, identifyRiskyBoundaries, initializePhaseController, TASK_PHASES, EXPLAIN_ALLOWED_TOOLS } from "./task/phase-controller.js";
 import { buildPrePatchPlan } from "./task/pre-patch-plan.js";
 import { requestStructuredPlan } from "./task/structured-plan.js";
 import { requestStructuredEditSpec } from "./task/edit-spec.js";
@@ -336,7 +336,11 @@ async function main() {
         prePatchPlan,
         tools: activeTools,
         activeTask,
-        allowedTools: TASK_PHASES.patch.allowedTools,
+        // Explain-style tasks only need read-only inspection tools.
+        // The full patch tool set adds ~50% more schema tokens per
+        // turn and risks the model accidentally writing files
+        // during a conversational answer.
+        allowedTools: isExplain ? EXPLAIN_ALLOWED_TOOLS : TASK_PHASES.patch.allowedTools,
         onProgress(message) {
           output.write(`${ui.progress(message)}\n`);
         },
@@ -785,7 +789,7 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
         prePatchPlan,
         tools,
         activeTask,
-        allowedTools: TASK_PHASES.patch.allowedTools,
+        allowedTools: isExplain ? EXPLAIN_ALLOWED_TOOLS : TASK_PHASES.patch.allowedTools,
         onProgress(message) {
           output.write(`${ui.progress(message)}\n`);
         },

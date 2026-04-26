@@ -291,6 +291,15 @@ test("Anthropic adapter sends prompt-caching beta header and cache_control on sy
     assert.ok(Array.isArray(requestBody.system), "system should be sent as an array of blocks when caching");
     assert.equal(requestBody.system[0].type, "text");
     assert.deepEqual(requestBody.system[0].cache_control, { type: "ephemeral" });
+    // The last tool also carries cache_control so the tools array is
+    // covered by the same cache breakpoint.
+    assert.ok(Array.isArray(requestBody.tools));
+    assert.ok(requestBody.tools.length > 0);
+    const lastTool = requestBody.tools[requestBody.tools.length - 1];
+    assert.deepEqual(lastTool.cache_control, { type: "ephemeral" });
+    // Earlier tools should NOT carry cache_control (one breakpoint covers everything).
+    const earlierWithCache = requestBody.tools.slice(0, -1).filter((t) => t.cache_control);
+    assert.equal(earlierWithCache.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;

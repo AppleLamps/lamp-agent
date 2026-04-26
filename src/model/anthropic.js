@@ -113,7 +113,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
         const messages = [
           { role: "user", content: userContent.join("\n") }
         ];
-        const tooling = anthropicTools(allowedTools);
+        const tooling = anthropicTools(allowedTools, { promptCaching: !!modelConfig.promptCaching });
 
         const maxToolSteps = modelConfig.maxToolSteps || 32;
         for (let step = 0; step < maxToolSteps; step += 1) {
@@ -218,7 +218,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
             }, null, 2)
           }
         ];
-        const tooling = anthropicTools(allowedTools);
+        const tooling = anthropicTools(allowedTools, { promptCaching: !!modelConfig.promptCaching });
         const maxRepairSteps = modelConfig.maxRepairSteps || 24;
         for (let step = 0; step < maxRepairSteps; step += 1) {
           const body = await callAnthropicMessage({
@@ -467,7 +467,7 @@ function anthropicMessages(messages) {
   });
 }
 
-function anthropicTools(allowedTools) {
+function anthropicTools(allowedTools, { promptCaching = false } = {}) {
   const allowed = new Set(allowedTools || []);
   const list = TOOL_DEFINITIONS
     .filter((tool) => !allowedTools || allowed.has(tool.function.name))
@@ -476,6 +476,15 @@ function anthropicTools(allowedTools) {
       description: tool.function.description,
       input_schema: tool.function.parameters || { type: "object", properties: {} }
     }));
+  // One cache breakpoint on the last tool covers system + tools as a
+  // single block. Subsequent calls skip recomputing those tokens.
+  // See https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+  if (promptCaching && list.length) {
+    list[list.length - 1] = {
+      ...list[list.length - 1],
+      cache_control: { type: "ephemeral" }
+    };
+  }
   return list;
 }
 

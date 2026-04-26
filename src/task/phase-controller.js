@@ -29,6 +29,11 @@ export const TASK_PHASES = {
     allowedTools: ["read_file", "search_files", "find_symbols", "find_definition", "find_references", "find_imports", "find_exports", "symbol_callers", "symbol_dependencies", "dependency_graph", "component_map", "route_map", "apply_patch", "preview_patch", "write_file", "create_file", "delete_file", "rename_file", "replace_range", "replace_exact", "insert_before", "insert_after", "run_command"],
     next: "verify"
   },
+  // Read-only tool subset for explain-style tasks. The model is just
+  // answering a question — we don't need to hand it apply_patch,
+  // delete_file, branch_create, etc. Saves ~50% of the tools-array
+  // tokens per turn and prevents accidental writes during a
+  // conversational explanation.
   verify: {
     status: "verifying",
     requiredOutputs: ["verification_result"],
@@ -48,6 +53,24 @@ export const TASK_PHASES = {
     next: null
   }
 };
+
+export const EXPLAIN_ALLOWED_TOOLS = [
+  "list_files",
+  "read_file",
+  "search_files",
+  "find_symbols",
+  "find_definition",
+  "find_references",
+  "find_imports",
+  "find_exports",
+  "symbol_callers",
+  "symbol_dependencies",
+  "dependency_graph",
+  "component_map",
+  "route_map",
+  "git_status",
+  "git_diff"
+];
 
 export function createPhaseController(activeTask) {
   return {
