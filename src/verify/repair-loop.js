@@ -10,6 +10,7 @@ export async function verifyAndRepair({
   model,
   userRequest,
   projectSummary,
+  environment = null,
   maxAttempts = 3,
   allowedRepairTools = null,
   onProgress = () => {},
@@ -54,6 +55,7 @@ export async function verifyAndRepair({
         tools,
         userRequest,
         projectSummary,
+        environment,
         // Pass a compact, structured failure shape to the model rather
         // than the full parsed record. The model gets the structured
         // errors[], failed_files, expected/actual, and the

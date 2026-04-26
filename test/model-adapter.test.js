@@ -195,6 +195,137 @@ test("OpenRouter adapter does NOT mark cache_control when routing to non-Claude 
   }
 });
 
+test("OpenRouter adapter passes reasoning config through to body.reasoning", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-reasoning-"));
+  const activeTask = { id: "task-r", dir: path.join(cwd, ".agent", "tasks", "task-r") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let body = null;
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        })
+      };
+    };
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/o3-mini",
+      reasoning: { effort: "high", max_tokens: 8000 },
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "design a refactor",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      tools: {},
+      activeTask
+    });
+    assert.deepEqual(body.reasoning, { effort: "high", max_tokens: 8000 });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter adapter omits body.reasoning when not configured", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-noreason-"));
+  const activeTask = { id: "task-nr", dir: path.join(cwd, ".agent", "tasks", "task-nr") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let body = null;
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        })
+      };
+    };
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      tools: {},
+      activeTask
+    });
+    assert.equal(body.reasoning, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("OpenRouter adapter appends cwd and platform to the system prompt when environment is provided", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-env-"));
+  const activeTask = { id: "task-env", dir: path.join(cwd, ".agent", "tasks", "task-env") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.OPENROUTER_API_KEY;
+  let body = null;
+  try {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    globalThis.fetch = async (_url, init) => {
+      body = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{ message: { content: "ok" } }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+        })
+      };
+    };
+    const adapter = createOpenRouterAdapter({
+      provider: "openrouter",
+      model: "openai/gpt-4o-mini",
+      apiKeyEnv: "OPENROUTER_API_KEY",
+      allowNetwork: true,
+      maxRetries: 0,
+      capabilities: { toolCalling: true }
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "", memory: null },
+      environment: { cwd: "/projects/sample", platform: "win32" },
+      tools: {},
+      activeTask
+    });
+    const systemMessage = body.messages.find((m) => m.role === "system");
+    assert.ok(systemMessage, "system message should be present");
+    assert.match(systemMessage.content, /Working directory: \/projects\/sample/);
+    assert.match(systemMessage.content, /Platform: win32/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("OpenRouter adapter sends context-compression plugin by default and honors disable flag", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-compress-"));
   const activeTask = { id: "task-compress", dir: path.join(cwd, ".agent", "tasks", "task-compress") };

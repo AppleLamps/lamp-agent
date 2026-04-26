@@ -10,8 +10,8 @@ item below has the why, the how, and the test/pitfall notes.
 - [x] 1. Cache tool schemas (cost)
 - [x] 2. Narrow tools and skip extras for explain-style tasks
 - [x] 3. OpenRouter `context-compression` plugin for long sessions
-- [ ] 4. Extended thinking / reasoning, opt-in
-- [ ] 5. System prompt should include `cwd` and platform
+- [x] 4. Extended thinking / reasoning, opt-in
+- [x] 5. System prompt should include `cwd` and platform
 - [ ] 6. Denial-escalation pattern
 - [ ] 7. Conversation memory across sessions / `/resume`
 
@@ -211,6 +211,19 @@ assistant text.
 ## Status log
 
 (Append entries here as items land. Newest at the top.)
+
+- **Items 4, 5 landed.** `model.reasoning` opt-in:
+  `{ effort, max_tokens, exclude }` flows through to OpenRouter as
+  `body.reasoning`; the Anthropic adapter translates to
+  `body.thinking = { type: "enabled", budget_tokens }` (effort →
+  budget: low=1024, medium=4096, high=16384, override with
+  `max_tokens`). `environment: { cwd, platform }` is now passed by
+  the CLI into both `model.respond` and `model.repair` (via
+  `verifyAndRepair`); both adapters append "Working directory: …"
+  and "Platform: …" lines to the system prompt via the new
+  exported `buildSystemContent` helper. 5 new unit tests cover the
+  new wire shapes for both providers. Test count: 270 unit
+  (267 pass + 3 skip) + 15 e2e.
 
 - **Items 1, 2, 3 landed.** Tool schemas now carry
   `cache_control: { type: "ephemeral" }` on the last entry when

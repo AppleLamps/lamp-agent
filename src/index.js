@@ -334,6 +334,7 @@ async function main() {
         userRequest: line,
         projectSummary,
         prePatchPlan,
+        environment: { cwd, platform: process.platform },
         tools: activeTools,
         activeTask,
         // Explain-style tasks only need read-only inspection tools.
@@ -408,6 +409,7 @@ async function main() {
       model,
       userRequest: line,
       projectSummary,
+      environment: { cwd, platform: process.platform },
       allowedRepairTools: [...new Set([...TASK_PHASES.patch.allowedTools, ...TASK_PHASES.verify.allowedTools])],
       onProgress(message) {
         if (repairStreaming) {
@@ -787,6 +789,7 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
         userRequest: line,
         projectSummary,
         prePatchPlan,
+        environment: { cwd, platform: process.platform },
         tools,
         activeTask,
         allowedTools: isExplain ? EXPLAIN_ALLOWED_TOOLS : TASK_PHASES.patch.allowedTools,
@@ -855,6 +858,7 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
       model,
       userRequest: line,
       projectSummary,
+      environment: { cwd, platform: process.platform },
       allowedRepairTools: [...new Set([...TASK_PHASES.patch.allowedTools, ...TASK_PHASES.verify.allowedTools])],
       onProgress(message) {
         if (resumeRepairStreaming) {

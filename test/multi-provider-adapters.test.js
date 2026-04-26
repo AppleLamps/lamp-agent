@@ -350,6 +350,89 @@ test("Anthropic adapter sends a plain string system prompt when promptCaching is
   }
 });
 
+test("Anthropic adapter translates reasoning config to body.thinking with a budget_tokens", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-anthropic-thinking-"));
+  const activeTask = { id: "t", dir: path.join(cwd, ".agent", "tasks", "t") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.ANTHROPIC_API_KEY;
+  let requestBody = null;
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    globalThis.fetch = async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: [{ type: "text", text: "thought." }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 5, output_tokens: 1 }
+        })
+      };
+    };
+    const adapter = createAnthropicAdapter({
+      model: "claude-3-5-sonnet-20241022",
+      allowNetwork: true,
+      reasoning: { effort: "high" }
+    });
+    await adapter.respond({
+      userRequest: "hard problem",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "" },
+      tools: {},
+      activeTask
+    });
+    assert.deepEqual(requestBody.thinking, { type: "enabled", budget_tokens: 16384 });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("Anthropic adapter appends cwd and platform to system when environment is provided", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-anthropic-env-"));
+  const activeTask = { id: "t", dir: path.join(cwd, ".agent", "tasks", "t") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.ANTHROPIC_API_KEY;
+  let requestBody = null;
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    globalThis.fetch = async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 5, output_tokens: 1 }
+        })
+      };
+    };
+    const adapter = createAnthropicAdapter({
+      model: "claude-3-5-sonnet-20241022",
+      allowNetwork: true
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "" },
+      environment: { cwd: "C:\\code\\app", platform: "win32" },
+      tools: {},
+      activeTask
+    });
+    // System is a string when caching is off; cwd/platform are appended.
+    assert.equal(typeof requestBody.system, "string");
+    assert.match(requestBody.system, /Working directory: C:\\code\\app/);
+    assert.match(requestBody.system, /Platform: win32/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("Anthropic adapter falls back to a local message when the network is disabled", async () => {
   const adapter = createAnthropicAdapter({
     model: "claude-3-5-sonnet-20241022",

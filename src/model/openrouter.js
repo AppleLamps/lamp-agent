@@ -561,7 +561,7 @@ export function createOpenRouterAdapter(modelConfig) {
       }
     },
 
-    async respond({ userRequest, projectSummary, prePatchPlan = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken = null, signal = null }) {
+    async respond({ userRequest, projectSummary, prePatchPlan = null, environment = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
         return localHarnessResponse(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
@@ -582,7 +582,7 @@ export function createOpenRouterAdapter(modelConfig) {
           userContent.push("", "Pre-patch plan (heuristic, advisory):", planContext);
         }
         const messages = [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: buildSystemContent(SYSTEM_PROMPT, environment) },
           { role: "user", content: userContent.join("\n") }
         ];
 
@@ -751,7 +751,7 @@ export function createOpenRouterAdapter(modelConfig) {
       }
     },
 
-    async repair({ activeTask, tools, userRequest, projectSummary, failedChecks, attempt, maxAttempts, allowedTools = null, onToken = null, signal = null }) {
+    async repair({ activeTask, tools, userRequest, projectSummary, environment = null, failedChecks, attempt, maxAttempts, allowedTools = null, onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
         return {
@@ -767,13 +767,13 @@ export function createOpenRouterAdapter(modelConfig) {
         const messages = [
           {
             role: "system",
-            content: [
+            content: buildSystemContent([
               SYSTEM_PROMPT,
               "",
               "You are now in a bounded repair attempt.",
               "Use tools to inspect the failure and make the smallest patch likely to fix it.",
               "Do not broaden scope. Stop with a concise summary when done."
-            ].join("\n")
+            ].join("\n"), environment)
           },
           {
             role: "user",
@@ -969,6 +969,13 @@ async function callOpenRouter(apiKey, modelConfig, model, messages, options = { 
   ) {
     body.plugins = [{ id: "context-compression" }];
   }
+  // Reasoning / extended-thinking pass-through. OpenRouter normalizes
+  // the field across underlying providers (Claude `thinking`, OpenAI
+  // o-series `reasoning_effort`, Gemini thinking-tokens) so a single
+  // `body.reasoning` config works regardless of route.
+  // See https://openrouter.ai/docs/use-cases/reasoning-tokens
+  const reasoningPayload = buildReasoningPayload(modelConfig);
+  if (reasoningPayload) body.reasoning = reasoningPayload;
 
   const response = await fetch(resolveEndpoint(modelConfig), {
     method: "POST",
@@ -1027,6 +1034,8 @@ async function streamOpenRouterChat(apiKey, modelConfig, model, messages, option
   ) {
     body.plugins = [{ id: "context-compression" }];
   }
+  const reasoningPayload = buildReasoningPayload(modelConfig);
+  if (reasoningPayload) body.reasoning = reasoningPayload;
 
   const response = await fetch(resolveEndpoint(modelConfig), {
     method: "POST",
@@ -1472,6 +1481,41 @@ function filterToolDefinitions(allowedTools) {
  *
  * Returns `null` when there's nothing useful to add.
  */
+/**
+ * Append working-directory and platform lines to the system prompt
+ * when an `environment` object is supplied. Codex / Claude Code both
+ * surface `cwd` and OS to the model so it picks platform-appropriate
+ * commands (e.g. `Remove-Item` vs `rm -rf` on Windows).
+ */
+export function buildSystemContent(basePrompt, environment) {
+  if (!environment || (!environment.cwd && !environment.platform)) return basePrompt;
+  const lines = [basePrompt, ""];
+  if (environment.cwd) lines.push(`Working directory: ${environment.cwd}`);
+  if (environment.platform) lines.push(`Platform: ${environment.platform}`);
+  return lines.join("\n");
+}
+
+/**
+ * Translate `modelConfig.reasoning` into the OpenRouter wire shape.
+ * Accepts either:
+ *   - `true` → enable with default effort
+ *   - `{ effort: "low" | "medium" | "high", max_tokens?, exclude? }`
+ *
+ * Returns `null` when reasoning is not opted in (the field is omitted
+ * from the request entirely).
+ */
+export function buildReasoningPayload(modelConfig) {
+  const cfg = modelConfig?.reasoning;
+  if (!cfg) return null;
+  if (cfg === true) return { effort: "medium" };
+  if (typeof cfg !== "object") return null;
+  const out = {};
+  if (typeof cfg.effort === "string") out.effort = cfg.effort;
+  if (Number.isInteger(cfg.max_tokens)) out.max_tokens = cfg.max_tokens;
+  if (typeof cfg.exclude === "boolean") out.exclude = cfg.exclude;
+  return Object.keys(out).length ? out : null;
+}
+
 export function compactPrePatchPlanForModel(plan) {
   if (!plan || typeof plan !== "object") return null;
   const expected = plan.expected_scope || {};

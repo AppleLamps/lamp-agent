@@ -30,7 +30,7 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "../log/event-log.js";
 import { assertModelAdapter, normalizeModelCapabilities } from "./adapter-contract.js";
-import { TOOL_DEFINITIONS, executeTool, compactPrePatchPlanForModel } from "./openrouter.js";
+import { TOOL_DEFINITIONS, executeTool, compactPrePatchPlanForModel, buildReasoningPayload, buildSystemContent } from "./openrouter.js";
 
 const DEFAULT_ENDPOINT = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
@@ -94,7 +94,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
       }
     },
 
-    async respond({ userRequest, projectSummary, prePatchPlan = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken: _onToken = null, signal = null }) {
+    async respond({ userRequest, projectSummary, prePatchPlan = null, environment = null, tools, activeTask, allowedTools = null, onProgress = () => {}, onToken: _onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
       if (!apiKey || !modelConfig.allowNetwork) {
         return localFallback(userRequest, projectSummary, apiKey, modelConfig.allowNetwork);
@@ -122,7 +122,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
             modelConfig,
             model: modelConfig.model,
             messages,
-            system: SYSTEM_PROMPT,
+            system: buildSystemContent(SYSTEM_PROMPT, environment),
             tools: tooling,
             maxTokens: modelConfig.maxTokens || 4096,
             signal
@@ -195,7 +195,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
       }
     },
 
-    async repair({ activeTask, tools, userRequest, failedChecks, attempt, maxAttempts, allowedTools = null, onToken: _onToken = null, signal: _signal = null }) {
+    async repair({ activeTask, tools, userRequest, environment = null, failedChecks, attempt, maxAttempts, allowedTools = null, onToken: _onToken = null, signal: _signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
       if (!apiKey || !modelConfig.allowNetwork) {
         return {
@@ -226,7 +226,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
             modelConfig,
             model: modelConfig.model,
             messages,
-            system: `${SYSTEM_PROMPT}\n\nYou are now in a bounded repair attempt.`,
+            system: buildSystemContent(`${SYSTEM_PROMPT}\n\nYou are now in a bounded repair attempt.`, environment),
             tools: tooling,
             maxTokens: modelConfig.maxTokens || 4096
           });
@@ -354,6 +354,11 @@ async function callAnthropicMessage({ apiKey, modelConfig, model, messages, syst
   };
   if (system) body.system = systemPayload(system, modelConfig);
   if (Array.isArray(tools) && tools.length) body.tools = tools;
+  // Translate the shared `reasoning` config into Anthropic's
+  // `thinking` field. effort → budget tokens; explicit max_tokens
+  // wins when supplied. Skipped when reasoning is not opted in.
+  const thinkingPayload = anthropicThinkingPayload(modelConfig);
+  if (thinkingPayload) body.thinking = thinkingPayload;
 
   const response = await fetch(modelConfig.endpoint || DEFAULT_ENDPOINT, {
     method: "POST",
@@ -427,6 +432,28 @@ async function streamAnthropicMessage({ apiKey, modelConfig, model, messages, sy
     }
   }
   return { text, usage };
+}
+
+function anthropicThinkingPayload(modelConfig) {
+  const reasoning = buildReasoningPayload(modelConfig);
+  if (!reasoning) return null;
+  // Anthropic's thinking takes a budget_tokens integer rather than
+  // an effort enum. Map effort → budget unless max_tokens is set.
+  // Keeps the shared modelConfig.reasoning shape provider-agnostic.
+  const budget = Number.isInteger(reasoning.max_tokens)
+    ? reasoning.max_tokens
+    : effortBudget(reasoning.effort);
+  if (!budget) return null;
+  return { type: "enabled", budget_tokens: budget };
+}
+
+function effortBudget(effort) {
+  switch (effort) {
+    case "low": return 1024;
+    case "medium": return 4096;
+    case "high": return 16384;
+    default: return 4096;
+  }
 }
 
 function systemPayload(system, modelConfig) {
