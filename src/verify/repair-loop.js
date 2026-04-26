@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "../log/event-log.js";
 import { summarizeFailureForRepair } from "../checks/failure-summary.js";
+import { requestRepairFindings } from "../task/repair-findings.js";
 
 export async function verifyAndRepair({
   activeTask,
@@ -11,7 +12,9 @@ export async function verifyAndRepair({
   projectSummary,
   maxAttempts = 3,
   allowedRepairTools = null,
-  onProgress = () => {}
+  onProgress = () => {},
+  onToken = null,
+  signal = null
 }) {
   await appendEvent(activeTask.dir, {
     type: "verify_started",
@@ -60,7 +63,9 @@ export async function verifyAndRepair({
         testRunner: testRunnerInfo,
         attempt,
         maxAttempts,
-        allowedTools: allowedRepairTools
+        allowedTools: allowedRepairTools,
+        onToken,
+        signal
       })
       : { ok: false, message: "Model repair is not available." };
 
@@ -114,7 +119,38 @@ export async function verifyAndRepair({
     });
   }
 
-  const summary = { status, attempts, checks: summarizeChecks(checks), failed: summarizeChecks(failed) };
+  // Ask the model for a structured diagnosis when checks are still
+  // failing. The findings are persisted as repair-findings.json so the
+  // review surface can lift them into the warnings card without a
+  // second round-trip. No-ops cleanly when the adapter has no JSON
+  // support or the model rejects the schema.
+  let repairFindings = null;
+  if (status === "failed" && typeof model?.respondJson === "function") {
+    onProgress("Diagnosing remaining failures");
+    const failedSummaries = failed.map((check) =>
+      summarizeFailureForRepair(check.parsed || check, { codeIndex })
+    );
+    const findingsResult = await requestRepairFindings({
+      adapter: model,
+      userRequest,
+      projectSummary,
+      status,
+      failedChecks: failedSummaries,
+      attempts,
+      activeTask
+    });
+    if (findingsResult.ok) {
+      repairFindings = findingsResult.findings;
+    }
+  }
+
+  const summary = {
+    status,
+    attempts,
+    checks: summarizeChecks(checks),
+    failed: summarizeChecks(failed),
+    repair_findings: repairFindings
+  };
   await writeVerificationSummary(activeTask, summary);
   return { ...summary, rawChecks: checks };
 }

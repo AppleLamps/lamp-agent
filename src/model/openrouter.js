@@ -412,6 +412,64 @@ export const TOOL_DEFINITIONS = [
   {
     type: "function",
     function: {
+      name: "branch_create",
+      description: "Create a new git branch from the current HEAD. Branch creation is local; pushing happens through pr_create or git push (both gated by external_publish approval).",
+      parameters: {
+        type: "object",
+        required: ["name"],
+        properties: {
+          name: { type: "string", description: "Branch name (e.g. lamp/fix-login-test)." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "pr_create",
+      description: "Open a pull request via the gh CLI. Always requires user approval (external_publish). Returns the PR URL when one is created.",
+      parameters: {
+        type: "object",
+        required: ["title"],
+        properties: {
+          title: { type: "string" },
+          body: { type: "string" },
+          base: { type: "string", description: "Optional base branch (defaults to the repo default)." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "pr_status",
+      description: "Read the check-status table for a PR via gh pr checks. Pass a PR number, or omit to use the current branch's PR.",
+      parameters: {
+        type: "object",
+        properties: {
+          number: { type: "integer" }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "ci_log",
+      description: "Read a CI run's log via gh run view --log. Optionally scope to a specific job by name. Useful for diagnosing CI failures.",
+      parameters: {
+        type: "object",
+        required: ["run_id"],
+        properties: {
+          run_id: { type: "string", description: "Run id (numeric or string form accepted by gh run view)." },
+          job: { type: "string", description: "Optional job name to scope the log to." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "detect_test_runner",
       description: "Detect the test runner used in this workspace (Jest, Vitest, Node, Mocha, Playwright, pytest, etc.).",
       parameters: { type: "object", properties: {} }
@@ -681,7 +739,7 @@ export function createOpenRouterAdapter(modelConfig) {
       }
     },
 
-    async repair({ activeTask, tools, userRequest, projectSummary, failedChecks, attempt, maxAttempts, allowedTools = null }) {
+    async repair({ activeTask, tools, userRequest, projectSummary, failedChecks, attempt, maxAttempts, allowedTools = null, onToken = null, signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv];
       if (!apiKey || !modelConfig.allowNetwork) {
         return {
@@ -718,7 +776,7 @@ export function createOpenRouterAdapter(modelConfig) {
         ];
 
         for (let step = 0; step < 6; step += 1) {
-          const body = await requestOpenRouter({ apiKey, modelConfig, messages, options: { allowedTools }, activeTask, purpose: "repair" });
+          const body = await requestOpenRouter({ apiKey, modelConfig, messages, options: { allowedTools }, activeTask, purpose: "repair", onToken, signal });
           const message = body.choices?.[0]?.message;
           if (!message) return { ok: false, message: "Repair model returned no message." };
           messages.push(message);
@@ -1277,6 +1335,14 @@ export async function executeTool(name, args, { tools, activeTask, allowedTools 
       return tools.componentMap();
     case "route_map":
       return tools.routeMap();
+    case "branch_create":
+      return tools.branchCreate(args.name, activeTask);
+    case "pr_create":
+      return tools.prCreate({ title: args.title, body: args.body, base: args.base }, activeTask);
+    case "pr_status":
+      return tools.prStatus(args.number ?? null, activeTask);
+    case "ci_log":
+      return tools.ciLog(args.run_id, args.job || null, activeTask);
     case "detect_test_runner":
       return tools.detectTestRunner();
     case "run_test_file":

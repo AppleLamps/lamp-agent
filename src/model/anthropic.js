@@ -16,10 +16,16 @@
 //
 // Out of scope for now (will be reasonable to add later):
 //   - streaming inside `respond`/`repair` (Anthropic's streaming
-//     content_block_delta protocol is more involved than OpenAI's;
-//     non-streaming is enough to cover the basic flow)
-//   - prompt caching (`anthropic-beta: prompt-caching-2024-07-31`)
+//     content_block_delta protocol with tool_use blocks is more
+//     involved than OpenAI's; non-streaming is enough to cover the
+//     basic flow)
 //   - extended-thinking responses
+//
+// Prompt caching: opt in by setting `model.promptCaching = true` in
+// `.agent/config.json`. When enabled, the adapter sends the
+// `anthropic-beta: prompt-caching-2024-07-31` header and marks the
+// system prompt with `cache_control: { type: "ephemeral" }` so
+// cache hits skip the static system text on subsequent calls.
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { appendEvent } from "../log/event-log.js";
@@ -186,7 +192,7 @@ export function createAnthropicAdapter(modelConfig = {}) {
       }
     },
 
-    async repair({ activeTask, tools, userRequest, failedChecks, attempt, maxAttempts, allowedTools = null }) {
+    async repair({ activeTask, tools, userRequest, failedChecks, attempt, maxAttempts, allowedTools = null, onToken: _onToken = null, signal: _signal = null }) {
       const apiKey = process.env[modelConfig.apiKeyEnv || "ANTHROPIC_API_KEY"];
       if (!apiKey || !modelConfig.allowNetwork) {
         return {
@@ -342,7 +348,7 @@ async function callAnthropicMessage({ apiKey, modelConfig, model, messages, syst
     max_tokens: maxTokens,
     messages: anthropicMessages(messages)
   };
-  if (system) body.system = system;
+  if (system) body.system = systemPayload(system, modelConfig);
   if (Array.isArray(tools) && tools.length) body.tools = tools;
 
   const response = await fetch(modelConfig.endpoint || DEFAULT_ENDPOINT, {
@@ -367,7 +373,7 @@ async function streamAnthropicMessage({ apiKey, modelConfig, model, messages, sy
     messages: anthropicMessages(messages),
     stream: true
   };
-  if (system) body.system = system;
+  if (system) body.system = systemPayload(system, modelConfig);
 
   const response = await fetch(modelConfig.endpoint || DEFAULT_ENDPOINT, {
     method: "POST",
@@ -419,12 +425,27 @@ async function streamAnthropicMessage({ apiKey, modelConfig, model, messages, sy
   return { text, usage };
 }
 
+function systemPayload(system, modelConfig) {
+  // When prompt caching is on, send the system prompt as an array of
+  // text blocks with cache_control on the static piece. The next call
+  // can skip recomputing the system prompt's tokens. Anthropic
+  // tolerates plain strings too, so we keep that path for the
+  // non-caching case to minimise body churn.
+  if (modelConfig?.promptCaching) {
+    return [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
+  }
+  return system;
+}
+
 function anthropicHeaders(apiKey, modelConfig) {
   const headers = {
     "x-api-key": apiKey,
     "anthropic-version": ANTHROPIC_VERSION,
     "content-type": "application/json"
   };
+  if (modelConfig?.promptCaching) {
+    headers["anthropic-beta"] = "prompt-caching-2024-07-31";
+  }
   if (modelConfig?.extraHeaders && typeof modelConfig.extraHeaders === "object") {
     Object.assign(headers, modelConfig.extraHeaders);
   }

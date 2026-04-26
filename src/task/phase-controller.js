@@ -32,7 +32,7 @@ export const TASK_PHASES = {
   verify: {
     status: "verifying",
     requiredOutputs: ["verification_result"],
-    allowedTools: ["run_available_checks", "run_tests", "run_lint", "run_typecheck", "run_build", "run_test_file", "run_test_name", "run_related_tests", "run_command"],
+    allowedTools: ["run_available_checks", "run_tests", "run_lint", "run_typecheck", "run_build", "run_test_file", "run_test_name", "run_related_tests", "run_command", "pr_status", "ci_log"],
     next: "critique"
   },
   critique: {
@@ -44,7 +44,7 @@ export const TASK_PHASES = {
   final_review: {
     status: "ready_to_review",
     requiredOutputs: ["final_review"],
-    allowedTools: ["run_available_checks", "git_diff"],
+    allowedTools: ["run_available_checks", "git_diff", "branch_create", "pr_create", "pr_status", "ci_log"],
     next: null
   }
 };

@@ -250,6 +250,97 @@ test("Anthropic adapter translates tool calls and returns the assistant text", a
   }
 });
 
+test("Anthropic adapter sends prompt-caching beta header and cache_control on system when promptCaching is enabled", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-anthropic-cache-"));
+  const activeTask = { id: "task-anthropic-cache", dir: path.join(cwd, ".agent", "tasks", "task-anthropic-cache") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.ANTHROPIC_API_KEY;
+  let requestBody = null;
+  let requestHeaders = null;
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    globalThis.fetch = async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      requestHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: [{ type: "text", text: "Cached." }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 10, output_tokens: 2 }
+        })
+      };
+    };
+
+    const adapter = createAnthropicAdapter({
+      model: "claude-3-5-sonnet-20241022",
+      allowNetwork: true,
+      promptCaching: true
+    });
+    const response = await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "" },
+      tools: {},
+      activeTask
+    });
+    assert.equal(response.message, "Cached.");
+    assert.equal(requestHeaders["anthropic-beta"], "prompt-caching-2024-07-31");
+    // System prompt is sent as a structured array with cache_control on the
+    // static block so subsequent calls hit the cache.
+    assert.ok(Array.isArray(requestBody.system), "system should be sent as an array of blocks when caching");
+    assert.equal(requestBody.system[0].type, "text");
+    assert.deepEqual(requestBody.system[0].cache_control, { type: "ephemeral" });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("Anthropic adapter sends a plain string system prompt when promptCaching is off (default)", async () => {
+  const cwd = await mkdtemp(path.join(tmpdir(), "lamp-agent-anthropic-nocache-"));
+  const activeTask = { id: "t", dir: path.join(cwd, ".agent", "tasks", "t") };
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.ANTHROPIC_API_KEY;
+  let requestBody = null;
+  let requestHeaders = null;
+  try {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    globalThis.fetch = async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      requestHeaders = init.headers;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          content: [{ type: "text", text: "ok" }],
+          stop_reason: "end_turn",
+          usage: { input_tokens: 5, output_tokens: 1 }
+        })
+      };
+    };
+    const adapter = createAnthropicAdapter({
+      model: "claude-3-5-sonnet-20241022",
+      allowNetwork: true
+    });
+    await adapter.respond({
+      userRequest: "ping",
+      projectSummary: { fileCount: 0, scripts: [], notableFiles: [], git: "" },
+      tools: {},
+      activeTask
+    });
+    assert.equal(typeof requestBody.system, "string");
+    assert.equal(requestHeaders["anthropic-beta"], undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = originalKey;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("Anthropic adapter falls back to a local message when the network is disabled", async () => {
   const adapter = createAnthropicAdapter({
     model: "claude-3-5-sonnet-20241022",

@@ -153,7 +153,21 @@ export async function detectTestRunner(cwd) {
         version: null,
         runFileCmd: (file) => `python -m pytest ${quote(file)}`,
         runNameCmd: (name) => `python -m pytest -k ${quote(name)}`,
-        runFileAndNameCmd: (file, name) => `python -m pytest ${quote(file)} -k ${quote(name)}`
+        runFileAndNameCmd: (file, name) => `python -m pytest ${quote(file)} -k ${quote(name)}`,
+        // pytest writes JUnit XML to a file, not stdout — capture: "tmp-file"
+        // tells the runtime to generate a temp path and pass it as the trailing
+        // argument to each command builder, then read that file back for parsing.
+        structuredReporter: {
+          format: "pytest-junit",
+          capture: "tmp-file",
+          fileExtension: ".xml",
+          runFileCmd: (file, junitPath) =>
+            `python -m pytest --junit-xml=${quote(junitPath)} ${quote(file)}`,
+          runNameCmd: (name, junitPath) =>
+            `python -m pytest --junit-xml=${quote(junitPath)} -k ${quote(name)}`,
+          runFileAndNameCmd: (file, name, junitPath) =>
+            `python -m pytest --junit-xml=${quote(junitPath)} ${quote(file)} -k ${quote(name)}`
+        }
       };
     }
   }

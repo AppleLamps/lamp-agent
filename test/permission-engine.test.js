@@ -45,6 +45,33 @@ test("asks before secret-like paths", () => {
   assert.equal(engine.classifyPath(".env", "read").tier, "secret");
 });
 
+test("classifies gh pr create / merge as external_publish", () => {
+  assert.equal(engine.classifyCommand("gh pr create --title hi --body x").tier, "external_publish");
+  assert.equal(engine.classifyCommand("gh pr merge 42 --squash").tier, "external_publish");
+  // Plain git push remains external_publish (existing behaviour).
+  assert.equal(engine.classifyCommand("git push origin main").tier, "external_publish");
+});
+
+test("blocks force-push and equivalent rewrite-history flags", () => {
+  for (const command of [
+    "git push --force",
+    "git push -f origin main",
+    "git push --force-with-lease",
+    "git push --mirror"
+  ]) {
+    const decision = engine.classifyCommand(command);
+    assert.equal(decision.action, "blocked", `${command} should be blocked, got ${decision.action}`);
+  }
+});
+
+test("read-only gh pr / gh run reads still go through ask (unknown)", () => {
+  // We don't pre-classify gh pr checks / gh run view as read-only;
+  // they fall through to the default "ask" tier so the user has the
+  // chance to deny per-call.
+  assert.equal(engine.classifyCommand("gh pr checks 42").action, "ask");
+  assert.equal(engine.classifyCommand("gh run view 12345 --log").action, "ask");
+});
+
 test("allows targeted test runner commands as local checks", () => {
   // npx runners
   assert.equal(engine.classifyCommand("npx jest src/foo.test.js").action, "allow");

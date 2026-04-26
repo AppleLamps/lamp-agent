@@ -45,21 +45,22 @@ export async function finalReview(activeTask, tools, response, critique = null) 
     : await tools.runAvailableChecks(activeTask);
   const diff = await tools.taskDiff(activeTask);
   const beliefs = await summarizeBeliefs(activeTask);
+  const repairFindings = await readJson(path.join(activeTask.dir, "repair-findings.json"), null);
   const summary = await buildReviewSummary({ activeTask, changed, checks, diff, critique, beliefs });
   const checkLines = checks.map((check) => {
     if (check.skipped) return `Skipped ${check.name}: ${check.message}`;
     return `${check.name}: ${check.ok ? "passed" : "failed"}`;
   });
 
-  const lines = buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs, summary });
+  const lines = buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs, summary, repairFindings });
 
   const review = lines.join("\n");
   await writeFile(path.join(activeTask.dir, "final-summary.md"), `${response.message}\n\n${review}\n`);
   return review;
 }
 
-function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs, summary }) {
-  const warningLines = warningsFrom({ checks, critique, beliefs });
+function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs, summary, repairFindings }) {
+  const warningLines = warningsFrom({ checks, critique, beliefs, repairFindings });
   return [
     "Done.",
     "",
@@ -80,6 +81,7 @@ function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs,
     "Checks:",
     ...(checkLines.length ? checkLines.map((line) => `- ${line}`) : ["- No checks run"]),
     ...(summary.checkSnippets.length ? ["", "Check snippets:", ...formatCheckSnippets(summary.checkSnippets)] : []),
+    ...(repairFindings ? ["", "Repair diagnosis:", ...formatRepairFindings(repairFindings)] : []),
     "",
     "Review:",
     `- ${formatCritiqueSummary(critique)}`,
@@ -99,6 +101,7 @@ function buildReviewCard({ changed, checks, checkLines, diff, critique, beliefs,
     "- adjust",
     "- undo",
     "- see diff",
+    "- preview pending changes",
     "- see technical details",
     "- open changed file list",
     "- resolve conflicts",
@@ -132,7 +135,7 @@ function formatTimeline(timeline) {
   return timeline.map((item) => `- ${item.at}: ${item.label}`);
 }
 
-function warningsFrom({ checks, critique, beliefs }) {
+function warningsFrom({ checks, critique, beliefs, repairFindings }) {
   const warnings = [];
   const failed = checks.filter((check) => check.ok === false && !check.skipped);
   const skipped = checks.filter((check) => check.skipped);
@@ -146,7 +149,30 @@ function warningsFrom({ checks, critique, beliefs }) {
   }
   for (const risk of beliefs.risks) warnings.push(risk.text);
   for (const assumption of beliefs.assumptions) warnings.push(`Assumption: ${assumption.text}`);
+  if (repairFindings?.diagnosis) {
+    const severity = repairFindings.severity ? ` [${repairFindings.severity}]` : "";
+    warnings.push(`Repair diagnosis${severity}: ${repairFindings.diagnosis}`);
+  }
   return [...new Set(warnings)];
+}
+
+function formatRepairFindings(findings) {
+  const lines = [];
+  if (findings.diagnosis) lines.push(`- Diagnosis: ${findings.diagnosis}`);
+  if (findings.severity) lines.push(`- Severity: ${findings.severity}`);
+  if (findings.summary) lines.push(`- Summary: ${findings.summary}`);
+  if (Array.isArray(findings.blockers) && findings.blockers.length) {
+    lines.push(`- Blockers: ${findings.blockers.join("; ")}`);
+  }
+  if (findings.proposed_fix?.summary) {
+    lines.push(`- Proposed fix: ${findings.proposed_fix.summary}`);
+  }
+  if (Array.isArray(findings.proposed_fix?.steps) && findings.proposed_fix.steps.length) {
+    for (const step of findings.proposed_fix.steps) {
+      lines.push(`  · ${step}`);
+    }
+  }
+  return lines;
 }
 
 function formatCritiqueSummary(critique) {

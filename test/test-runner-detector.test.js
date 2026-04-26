@@ -34,6 +34,28 @@ describe("detectTestRunner", () => {
     }
   });
 
+  it("exposes structured reporter for pytest with tmp-file capture", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "pytest-struct-"));
+    try {
+      // pytest detection requires evidence — pyproject.toml mentioning pytest is enough.
+      await writeFile(path.join(dir, "pyproject.toml"), '[tool.pytest.ini_options]\n');
+      const result = await detectTestRunner(dir);
+      assert.equal(result.runner, "pytest");
+      const reporter = result.structuredReporter;
+      assert.equal(reporter?.format, "pytest-junit");
+      assert.equal(reporter?.capture, "tmp-file");
+      assert.equal(reporter?.fileExtension, ".xml");
+      // The command builder accepts a junitPath as its trailing arg.
+      const cmd = reporter.runFileCmd("test/auth.py", "/tmp/lamp-x.xml");
+      assert.match(cmd, /--junit-xml=.*lamp-x\.xml/);
+      assert.match(cmd, /test\/auth\.py/);
+      const namedCmd = reporter.runNameCmd("login", "/tmp/lamp-y.xml");
+      assert.match(namedCmd, /-k login/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("exposes structured reporter forms for Jest and Vitest", async () => {
     const jestDir = await mkdtemp(path.join(tmpdir(), "jest-struct-"));
     try {

@@ -117,32 +117,24 @@ export async function findSymbolCallers({ cwd, codeIndex, symbol }) {
       });
       if (!resolved) continue;
 
-      // Determine whether this import statement actually brings the
-      // target symbol into the importing file. Default imports match
-      // when the source file has a default export and the symbol is
-      // its default name; named imports match when the symbol's
-      // exported name appears on the import statement; namespace
-      // imports always pull in every export.
-      const localName = importLocalName(importEntry, ident, resolved, codeIndex);
+      // Determine whether this import statement brings the target
+      // symbol — possibly under a different local name — into the
+      // importing file. `exposesSymbol` walks barrel modules and
+      // aliased re-exports so a chain like
+      // `import { authenticate } from "./auth"` →
+      // `auth/index.ts: export { login as authenticate } from "./login"`
+      // → defining file `login.ts` is recognised as a caller of
+      // `login`.
+      const localName = exposureLocalName({
+        importEntry,
+        targetSymbol: ident,
+        resolvedFile: resolved,
+        definingFiles,
+        codeIndex,
+        fileSet,
+        aliases
+      });
       if (!localName) continue;
-
-      // Only files that import the symbol from one of its defining
-      // files count as true callers. Without this, an exported name
-      // shared by two modules (e.g. two `init` functions) would
-      // bleed across them. Barrel modules that re-export the symbol
-      // from its real definition also count: the consumer is
-      // ultimately depending on the same code.
-      if (
-        definingFiles.size > 0
-        && !resolvesToDefiningFile({
-          resolved,
-          symbol: ident,
-          definingFiles,
-          codeIndex,
-          fileSet,
-          aliases
-        })
-      ) continue;
 
       // Scan the importing file body for word-boundary matches of the
       // local name. Skip the import statement's own line.
@@ -210,15 +202,15 @@ export function listSymbolImpact({ codeIndex, symbol }) {
         aliases
       });
       if (!resolved) continue;
-      if (!resolvesToDefiningFile({
-        resolved,
-        symbol: ident,
+      const localName = exposureLocalName({
+        importEntry,
+        targetSymbol: ident,
+        resolvedFile: resolved,
         definingFiles,
         codeIndex,
         fileSet,
         aliases
-      })) continue;
-      const localName = importLocalName(importEntry, ident, resolved, codeIndex);
+      });
       if (!localName) continue;
       callerFiles.add(importingFile);
       break;
@@ -510,17 +502,78 @@ function findJsxTags(lines) {
 }
 
 /**
- * Walk re-export chains to see whether `resolved` ultimately leads
- * back to one of the `definingFiles` for `symbol`. Handles barrel
- * modules that do `export { foo } from "./real"` or
- * `export * from "./real"`. Aliased re-exports
- * (`export { foo as bar } from "..."`) are intentionally not
- * traced — the parser drops the original name, so we'd need a
- * separate parser hook to support them.
+ * For an import statement (`importEntry`) that resolves to
+ * `resolvedFile`, return the local name in the importing file
+ * under which `targetSymbol` (defined in one of `definingFiles`)
+ * is brought in — or `null` if the statement does not actually
+ * import that symbol. Walks barrel re-exports so
+ * `export { foo } from "./real"` (direct), `export * from "./real"`
+ * (star), and `export { foo as bar } from "./real"` (aliased) are
+ * all transparent.
  */
-function resolvesToDefiningFile({
-  resolved,
-  symbol,
+function exposureLocalName({
+  importEntry,
+  targetSymbol,
+  resolvedFile,
+  definingFiles,
+  codeIndex,
+  fileSet,
+  aliases
+}) {
+  const names = importEntry?.names || [];
+  for (const entry of names) {
+    if (entry.kind === "named") {
+      // The name on the *exporting* file's side is `entry.original`
+      // when the consumer aliased on import (`import { foo as bar }`),
+      // else just `entry.name`.
+      const importedName = entry.original || entry.name;
+      if (exposesSymbol({
+        name: importedName,
+        resolvedFile,
+        targetSymbol,
+        definingFiles,
+        codeIndex,
+        fileSet,
+        aliases
+      })) {
+        return entry.name;
+      }
+    } else if (entry.kind === "default") {
+      // Local default-import name only counts when the resolved file
+      // exposes a default and the user is asking about that default.
+      const exports = codeIndex?.exports?.get(resolvedFile) || [];
+      const hasDefault = exports.some((e) => e.kind === "default" || e.name === "default");
+      if (hasDefault && entry.name === targetSymbol) return entry.name;
+    } else if (entry.kind === "namespace") {
+      // `import * as ns from "./mod"` brings every export under `ns`.
+      // We treat the file as a caller when the namespace's resolved
+      // file (or a re-export chain from it) exposes the target.
+      if (exposesSymbol({
+        name: targetSymbol,
+        resolvedFile,
+        targetSymbol,
+        definingFiles,
+        codeIndex,
+        fileSet,
+        aliases
+      })) {
+        return entry.name;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Does `resolvedFile` expose a value under the local name `name`
+ * that ultimately corresponds to `targetSymbol` defined in one of
+ * `definingFiles`? Walks `export { foo } from "..."`, `export *`,
+ * and `export { foo as bar } from "..."` chains. Bounded depth.
+ */
+function exposesSymbol({
+  name,
+  resolvedFile,
+  targetSymbol,
   definingFiles,
   codeIndex,
   fileSet,
@@ -528,56 +581,51 @@ function resolvesToDefiningFile({
   depth = 8,
   visited = new Set()
 }) {
-  if (definingFiles.has(resolved)) return true;
-  if (depth <= 0 || visited.has(resolved)) return false;
-  visited.add(resolved);
-  const exports = codeIndex?.exports?.get(resolved) || [];
+  if (name === targetSymbol && definingFiles.has(resolvedFile)) return true;
+  const visitKey = `${resolvedFile}|${name}`;
+  if (depth <= 0 || visited.has(visitKey)) return false;
+  visited.add(visitKey);
+  const exports = codeIndex?.exports?.get(resolvedFile) || [];
   for (const exp of exports) {
     if (exp?.kind !== "re-export" || !exp?.source) continue;
-    if (exp.name !== "*" && exp.name !== symbol) continue;
     const nextResolved = resolveImport({
-      from: resolved,
+      from: resolvedFile,
       source: exp.source,
       fileSet,
       aliases
     });
     if (!nextResolved) continue;
-    if (resolvesToDefiningFile({
-      resolved: nextResolved,
-      symbol,
-      definingFiles,
-      codeIndex,
-      fileSet,
-      aliases,
-      depth: depth - 1,
-      visited
-    })) return true;
-  }
-  return false;
-}
-
-function importLocalName(importEntry, exportedName, resolvedFile, codeIndex) {
-  const names = importEntry?.names || [];
-  for (const entry of names) {
-    if (entry.kind === "named") {
-      // `original` is the exported name when the import uses an alias.
-      const exportName = entry.original || entry.name;
-      if (exportName === exportedName) return entry.name;
-    } else if (entry.kind === "default") {
-      // The local default-import name satisfies any default export.
-      // Verify the resolved file actually exports a default.
-      const exports = codeIndex?.exports?.get(resolvedFile) || [];
-      const hasDefault = exports.some((e) => e.kind === "default" || e.name === "default");
-      if (hasDefault && entry.name === exportedName) return entry.name;
-    } else if (entry.kind === "namespace") {
-      // `import * as ns from "./mod"` brings every export under `ns`.
-      // The local name to search for in the file body is `ns.exportedName`,
-      // but our regex is identifier-only — we report the namespace
-      // identifier so the caller can see the file is a likely user.
-      return entry.name;
+    if (exp.name === "*") {
+      // `export * from "./real"` — the exposed name flows through unchanged.
+      if (exposesSymbol({
+        name,
+        resolvedFile: nextResolved,
+        targetSymbol,
+        definingFiles,
+        codeIndex,
+        fileSet,
+        aliases,
+        depth: depth - 1,
+        visited
+      })) return true;
+    } else if (exp.name === name) {
+      // The exposed name on `resolvedFile` is `exp.name`. Upstream,
+      // the same value is exported under `exp.original || exp.name`.
+      const upstreamName = exp.original || exp.name;
+      if (exposesSymbol({
+        name: upstreamName,
+        resolvedFile: nextResolved,
+        targetSymbol,
+        definingFiles,
+        codeIndex,
+        fileSet,
+        aliases,
+        depth: depth - 1,
+        visited
+      })) return true;
     }
   }
-  return null;
+  return false;
 }
 
 async function readWorkspaceLines(cwd, relative) {
@@ -757,6 +805,7 @@ function parseJsLike(content, symbols, imports, exports_) {
         if (aliasMatch) {
           exports_.push({
             name: aliasMatch[2] || aliasMatch[1],
+            original: aliasMatch[1],
             kind: m[2] ? "re-export" : "named",
             source: m[2] || null,
             line: lineNumber

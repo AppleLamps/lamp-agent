@@ -154,6 +154,27 @@ test("symbol_callers traces named re-exports through a barrel module", async () 
   }
 });
 
+test("symbol_callers traces aliased re-exports (`export { x as y } from`)", async () => {
+  const { root, files } = await setupWorkspace({
+    "src/auth/login.ts": "export function login() { return 1; }\n",
+    "src/auth/index.ts": "export { login as authenticate } from \"./login\";\n",
+    "src/api/handler.ts": [
+      "import { authenticate } from \"../auth\";",
+      "export const x = authenticate();",
+      ""
+    ].join("\n")
+  });
+  try {
+    const codeIndex = await buildCodeIndex({ cwd: root, files });
+    const result = await findSymbolCallers({ cwd: root, codeIndex, symbol: "login" });
+    const caller = result.callers.find((c) => c.file === "src/api/handler.ts");
+    assert.ok(caller, "aliased re-export should be transparent for caller tracing");
+    assert.equal(caller.local_name, "authenticate");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("symbol_callers traces `export *` through a barrel module", async () => {
   const { root, files } = await setupWorkspace({
     "src/auth/login.ts": "export function login() { return 1; }\n",

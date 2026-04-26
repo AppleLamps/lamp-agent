@@ -1,7 +1,9 @@
-import { access, appendFile, cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, cp, mkdir, readFile, readdir, rm, writeFile, unlink } from "node:fs/promises";
 import { constants } from "node:fs";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import os from "node:os";
+import { randomBytes } from "node:crypto";
 import { createPermissionEngine } from "../permissions/permission-engine.js";
 import { applyFilePatch, parseUnifiedPatch } from "../patch/patch-engine.js";
 import { noteAlternativeApproach } from "../task/beliefs.js";
@@ -10,6 +12,13 @@ import { parseCheckOutput } from "../checks/check-parser.js";
 import { parseStructuredOutput } from "../checks/structured-reporter.js";
 import { mapFailedTestsToSources } from "../checks/relevant-files.js";
 import { detectTestRunner, findRelatedTestFiles } from "../checks/test-runner-detector.js";
+import {
+  detectGh,
+  branchCreate as ghBranchCreate,
+  prCreate as ghPrCreate,
+  prStatus as ghPrStatus,
+  ciLog as ghCiLog
+} from "../integrations/github.js";
 import { appendEvent } from "../log/event-log.js";
 import {
   buildCodeIndex,
@@ -454,7 +463,12 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
     async runCheckCommand(checkType, command, activeTask = null, options = {}) {
       const result = await this.runCommand(command, `Run ${checkType}`, activeTask);
-      if (!activeTask) return result;
+      if (!activeTask) {
+        if (options.structuredCaptureFile) {
+          await unlink(options.structuredCaptureFile).catch(() => {});
+        }
+        return result;
+      }
       // Prefer the structured reporter when the caller declared one;
       // fall back to the regex parser if structured parsing returns
       // null (e.g. the runner emitted text instead of JSON because of a
@@ -462,15 +476,29 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
       let parsed = null;
       let parsedSource = null;
       if (options.structuredFormat) {
+        let structuredInput = result.stdout;
+        if (options.structuredCaptureFile) {
+          // Runners that write their report to a file (pytest's
+          // `--junit-xml=<path>`, eslint's `-o <path>`, etc.) — read
+          // the temp file instead of stdout, then clean it up.
+          try {
+            structuredInput = await readFile(options.structuredCaptureFile, "utf8");
+          } catch {
+            structuredInput = "";
+          }
+        }
         parsed = parseStructuredOutput({
           format: options.structuredFormat,
           checkType,
           command,
           code: result.code,
-          stdout: result.stdout,
+          stdout: structuredInput,
           stderr: result.stderr
         });
         if (parsed) parsedSource = `structured:${options.structuredFormat}`;
+      }
+      if (options.structuredCaptureFile) {
+        await unlink(options.structuredCaptureFile).catch(() => {});
       }
       if (!parsed) {
         parsed = parseCheckOutput({
@@ -522,6 +550,44 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
       return this.runPackageScript("lint", activeTask);
     },
 
+    /**
+     * Run ESLint directly with `--format=json` so the structured-reporter
+     * parser can consume the result. Bypasses the user's `lint` script
+     * because we can't safely rewrite its flags. Falls back to a skipped
+     * record when ESLint is not in package dependencies.
+     */
+    async runLintStructured(activeTask = null) {
+      let pkg;
+      try {
+        pkg = JSON.parse(await readFile(path.join(cwd, "package.json"), "utf8"));
+      } catch {
+        return { name: "lint", skipped: true, message: "No package.json detected." };
+      }
+      const allDeps = { ...pkg.devDependencies, ...pkg.dependencies };
+      if (!allDeps.eslint) {
+        return { name: "lint", skipped: true, message: "ESLint not detected in dependencies." };
+      }
+      const pm = await this.detectPackageManager();
+      const bin = pmExecBin(pm, "eslint");
+      // Re-use the user's lint-script target if it directly invokes eslint —
+      // otherwise default to the workspace root. Strip any pre-existing
+      // --format/-f flag so our --format=json wins.
+      const scripts = await this.packageScripts();
+      const lintScript = scripts.lint || "";
+      const argsMatch = lintScript.match(/eslint\s+(.*)$/);
+      const rawArgs = argsMatch ? argsMatch[1].trim() : ".";
+      const cleanedArgs = rawArgs
+        .replace(/--format[=\s]+\S+/g, "")
+        .replace(/(?:^|\s)-f[=\s]+\S+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim() || ".";
+      const command = `${bin} --format=json ${cleanedArgs}`;
+      return {
+        name: "lint",
+        ...(await this.runCheckCommand("lint", command, activeTask, { structuredFormat: "eslint-json" }))
+      };
+    },
+
     async runTypecheck(activeTask = null) {
       return this.runPackageScript("typecheck", activeTask);
     },
@@ -543,7 +609,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `No supported test runner detected. Cannot run targeted test for file: ${filePath}`
         };
       }
-      const { command, format } = pickRunnerCommand(runner, "runFileCmd", filePath);
+      const { command, format, tempFile } = pickRunnerCommand(runner, "runFileCmd", filePath);
       if (!command) {
         return {
           ok: false,
@@ -551,7 +617,10 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `Runner ${runner.runner} does not support targeted file execution.`
         };
       }
-      return this.runCheckCommand("test", command, activeTask, { structuredFormat: format });
+      return this.runCheckCommand("test", command, activeTask, {
+        structuredFormat: format,
+        structuredCaptureFile: tempFile
+      });
     },
 
     async runTestName(testName, activeTask = null) {
@@ -563,7 +632,7 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `No supported test runner detected. Cannot run targeted test: ${testName}`
         };
       }
-      const { command, format } = pickRunnerCommand(runner, "runNameCmd", testName);
+      const { command, format, tempFile } = pickRunnerCommand(runner, "runNameCmd", testName);
       if (!command) {
         return {
           ok: false,
@@ -571,7 +640,10 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
           message: `Runner ${runner.runner} does not support targeted test name execution.`
         };
       }
-      return this.runCheckCommand("test", command, activeTask, { structuredFormat: format });
+      return this.runCheckCommand("test", command, activeTask, {
+        structuredFormat: format,
+        structuredCaptureFile: tempFile
+      });
     },
 
     async runRelatedTests(changedFile, activeTask = null) {
@@ -598,11 +670,14 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
 
       const results = [];
       for (const testFile of related) {
-        const { command, format } = pickRunnerCommand(runner, "runFileCmd", testFile);
+        const { command, format, tempFile } = pickRunnerCommand(runner, "runFileCmd", testFile);
         if (!command) continue;
         results.push({
           file: testFile,
-          ...(await this.runCheckCommand("test", command, activeTask, { structuredFormat: format }))
+          ...(await this.runCheckCommand("test", command, activeTask, {
+            structuredFormat: format,
+            structuredCaptureFile: tempFile
+          }))
         });
       }
 
@@ -712,6 +787,47 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
       const index = await getCodeIndex();
       const routes = await detectRoutes({ cwd, files: index.files });
       return { ok: true, routes, indexed: index.files.length };
+    },
+
+    // ---- GitHub / CI integrations -----------------------------------------
+    // Each one routes through `runCommand`, so the existing approval engine
+    // gates branch / push / PR-creation operations. `gh pr create`,
+    // `gh pr merge`, and `git push` are classified `external_publish` (ask);
+    // `git push --force` etc. are blocked outright.
+
+    async detectGh(activeTask = null) {
+      return detectGh({ runCommand: (cmd, purpose) => this.runCommand(cmd, purpose || "Detect gh", activeTask) });
+    },
+
+    async branchCreate(name, activeTask = null) {
+      return ghBranchCreate({
+        runCommand: (cmd, purpose) => this.runCommand(cmd, purpose || "Branch operation", activeTask),
+        name
+      });
+    },
+
+    async prCreate(args = {}, activeTask = null) {
+      return ghPrCreate({
+        runCommand: (cmd, purpose) => this.runCommand(cmd, purpose || "Open PR", activeTask),
+        title: args.title,
+        body: args.body,
+        base: args.base || null
+      });
+    },
+
+    async prStatus(number = null, activeTask = null) {
+      return ghPrStatus({
+        runCommand: (cmd, purpose) => this.runCommand(cmd, purpose || "Read PR checks", activeTask),
+        number
+      });
+    },
+
+    async ciLog(runId, job = null, activeTask = null) {
+      return ghCiLog({
+        runCommand: (cmd, purpose) => this.runCommand(cmd, purpose || "Read CI log", activeTask),
+        runId,
+        job
+      });
     },
 
     invalidateCodeIndex,
@@ -998,18 +1114,42 @@ function pushPreviewLine(preview, line) {
   if (preview.length < 12) preview.push(line.length > 220 ? `${line.slice(0, 220)}...` : line);
 }
 
+function pmExecBin(pm, pkg) {
+  switch (pm) {
+    case "pnpm": return `pnpm exec ${pkg}`;
+    case "yarn": return `yarn ${pkg}`;
+    case "bun":  return `bunx ${pkg}`;
+    default:     return `npx ${pkg}`;
+  }
+}
+
 function pickRunnerCommand(runner, builderKey, ...args) {
-  const structured = runner?.structuredReporter?.[builderKey];
+  const structuredCfg = runner?.structuredReporter;
+  const structured = structuredCfg?.[builderKey];
   if (typeof structured === "function") {
-    const command = structured(...args);
-    if (command) return { command, format: runner.structuredReporter.format || null };
+    let tempFile = null;
+    let command;
+    if (structuredCfg.capture === "tmp-file") {
+      // The runner writes its structured report to a tmp file
+      // (e.g. pytest's `--junitxml=<path>`) instead of stdout. The
+      // command builder receives the tmp path as its trailing arg.
+      const ext = structuredCfg.fileExtension || ".tmp";
+      const id = randomBytes(6).toString("hex");
+      tempFile = path.join(os.tmpdir(), `lamp-${Date.now()}-${id}${ext}`);
+      command = structured(...args, tempFile);
+    } else {
+      command = structured(...args);
+    }
+    if (command) {
+      return { command, format: structuredCfg.format || null, tempFile };
+    }
   }
   const plain = runner?.[builderKey];
   if (typeof plain === "function") {
     const command = plain(...args);
-    if (command) return { command, format: null };
+    if (command) return { command, format: null, tempFile: null };
   }
-  return { command: null, format: null };
+  return { command: null, format: null, tempFile: null };
 }
 
 function runShell(command, cwd) {

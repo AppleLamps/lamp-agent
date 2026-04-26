@@ -3,7 +3,11 @@ import path from "node:path";
 const SECRET_FILE_RE = /(^|[/\\])(\.env(\..*)?|id_rsa|id_ed25519|\.npmrc|\.pypirc|credentials|secrets?)([/\\]|$)/i;
 const DEPENDENCY_RE = /\b(npm\s+(install|i)|pnpm\s+add|yarn\s+add|bun\s+add|pip\s+install|bundle\s+install|cargo\s+add)\b/i;
 const NETWORK_RE = /\b(curl|wget|Invoke-WebRequest|iwr|fetch)\b|\bhttps?:\/\//i;
-const PUSH_DEPLOY_RE = /\b(git\s+push|npm\s+publish|vercel\s+deploy|railway\s+deploy|netlify\s+deploy|supabase\s+db\s+push)\b/i;
+const PUSH_DEPLOY_RE = /\b(git\s+push|gh\s+pr\s+create|gh\s+pr\s+merge|npm\s+publish|vercel\s+deploy|railway\s+deploy|netlify\s+deploy|supabase\s+db\s+push)\b/i;
+// Force-push and analogous "rewrite remote history" forms — destructive
+// to shared state. Blocked outright; the user can run them by hand if
+// they really mean it.
+const FORCE_PUSH_RE = /\bgit\s+push\b[^\n]*(?:\s--force\b|\s-f\b|\s--force-with-lease\b|\s--mirror\b)/i;
 // Destructive command patterns. We split alternatives ending in word
 // characters (which can carry a trailing `\b` to avoid false positives like
 // `format` matching `formatter`) from alternatives ending in non-word
@@ -39,6 +43,9 @@ export function createPermissionEngine({ cwd, config }) {
     classifyCommand(command) {
       if (DESTRUCTIVE_RE.test(command) || /\|\s*(sh|bash|powershell|pwsh)\b/i.test(command)) {
         return decision("blocked", "destructive", "This command is destructive or runs downloaded shell code.");
+      }
+      if (FORCE_PUSH_RE.test(command)) {
+        return decision("blocked", "destructive", "Force-push rewrites shared remote history; blocked.");
       }
       if (PUSH_DEPLOY_RE.test(command)) {
         return decision("ask", "external_publish", "This would publish or push changes outside the local workspace.");

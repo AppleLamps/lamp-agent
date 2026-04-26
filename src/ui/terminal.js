@@ -35,6 +35,21 @@ export function createTerminalUi({ output, input = process.stdin, env = process.
       return box("assistant", text, { color, borderColor: ANSI.cyan });
     },
 
+    /**
+     * Header printed before streamed assistant tokens. Cheaper than
+     * re-boxing on every token: a clear "assistant >" marker plus a
+     * dim rule-line, then raw tokens flow directly to stdout, then
+     * `assistantStreamFooter` closes the block.
+     */
+    assistantStreamHeader(label = "assistant") {
+      const tag = paint(color, ANSI.bold + ANSI.cyan, `${label} >`);
+      return `${tag}`;
+    },
+
+    assistantStreamFooter() {
+      return paint(color, ANSI.gray, "---");
+    },
+
     card(title, text) {
       return box(title, text, { color, borderColor: ANSI.gray });
     },

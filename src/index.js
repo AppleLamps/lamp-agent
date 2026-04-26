@@ -90,6 +90,10 @@ async function main() {
       await printDiff(activeTools, activeTask, ui);
       continue;
     }
+    if (line === "/preview" || line.toLowerCase() === "preview" || line.toLowerCase() === "preview pending changes") {
+      await printPreview(activeTools, activeTask, ui);
+      continue;
+    }
     if (line === "/details" || line.toLowerCase() === "see technical details" || line.toLowerCase() === "technical details") {
       await printTechnicalDetails(activeTask, ui);
       continue;
@@ -331,15 +335,16 @@ async function main() {
         },
         onToken(token) {
           if (!streamingActive) {
-            output.write(`${ui.progress("Streaming model response")}\n`);
+            output.write(`${ui.assistantStreamHeader("assistant")}\n`);
             streamingActive = true;
           }
           output.write(token);
         },
         signal: taskAbort.signal
       });
-      // Close out the streaming line if any tokens were written.
-      if (streamingActive) output.write("\n");
+      if (streamingActive) {
+        output.write(`\n${ui.assistantStreamFooter()}\n`);
+      }
     } catch (error) {
       const errorMessage = error?.message || String(error);
       output.write(`${ui.warning(`Model error: ${errorMessage}. Continuing with a fallback response so the task can finish cleanly.`)}\n`);
@@ -385,6 +390,7 @@ async function main() {
 
     output.write(`${ui.progress("Verifying the result")}\n`);
     await phaseController.begin("verify");
+    let repairStreaming = false;
     const verification = await verifyAndRepair({
       activeTask,
       tools: activeTools,
@@ -393,9 +399,24 @@ async function main() {
       projectSummary,
       allowedRepairTools: [...new Set([...TASK_PHASES.patch.allowedTools, ...TASK_PHASES.verify.allowedTools])],
       onProgress(message) {
+        if (repairStreaming) {
+          output.write(`\n${ui.assistantStreamFooter()}\n`);
+          repairStreaming = false;
+        }
         output.write(`${ui.progress(message)}\n`);
-      }
+      },
+      onToken(token) {
+        if (!repairStreaming) {
+          output.write(`${ui.assistantStreamHeader("repair")}\n`);
+          repairStreaming = true;
+        }
+        output.write(token);
+      },
+      signal: taskAbort.signal
     });
+    if (repairStreaming) {
+      output.write(`\n${ui.assistantStreamFooter()}\n`);
+    }
     await phaseController.complete("verify", { verification_result: verification || { ok: true } });
 
     output.write(`${ui.progress("Reviewing the result")}\n`);
@@ -440,6 +461,7 @@ function printHelp(ui) {
 Commands:
   /status  Show workspace status and changed files
   /diff    Show the active task diff summary
+  /preview Show a unified-diff preview of pending changes
   /details Show task artifacts and technical details
   /files   Show changed files for the active task
   /plan    Show the pre-patch plan recorded for the active task
@@ -458,6 +480,7 @@ Review actions:
   adjust <request>
   undo
   see diff
+  preview pending changes
 
 Ask in plain English, for example:
   Explain what kind of project this is
@@ -488,6 +511,22 @@ async function printDiff(tools, activeTask, ui) {
   output.write(`${ui.card("diff", formatDetailedDiff(diff))}\n`);
 }
 
+async function printPreview(tools, activeTask, ui) {
+  if (!activeTask) {
+    output.write(`${ui.warning("There is no active task to preview yet.")}\n`);
+    return;
+  }
+  const diff = await tools.taskDiff(activeTask);
+  // For git workspaces, the unified diff is the most faithful "what
+  // would be accepted" view. For non-git workspaces, fall back to
+  // the per-file summary with full preview lines.
+  if (diff?.ok && diff.source === "git" && diff.diff) {
+    output.write(`${ui.card("preview", `Pending changes (unified diff):\n\n${diff.diff}`)}\n`);
+    return;
+  }
+  output.write(`${ui.card("preview", `Pending changes (file summary):\n\n${formatDetailedDiff(diff)}`)}\n`);
+}
+
 async function handleReviewAction({ prompts, tools, rootTools, activeTask, ui, cwd, setActiveTools }) {
   const action = await prompts.reviewAction();
   if (!action.handled) return;
@@ -501,6 +540,10 @@ async function handleReviewAction({ prompts, tools, rootTools, activeTask, ui, c
   }
   if (action.choice === "diff") {
     await printDiff(tools, activeTask, ui);
+    return;
+  }
+  if (action.choice === "preview") {
+    await printPreview(tools, activeTask, ui);
     return;
   }
   if (action.choice === "details") {
@@ -689,6 +732,12 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
     if (latestMessage) response = { message: latestMessage, taskPatch: {} };
   }
 
+  // Hoisted so verify and critique steps in the resume path can also
+  // be cancelled, even when patch is already complete and we're
+  // resuming directly into verify.
+  const taskAbort = new AbortController();
+  activeTask.abortController = taskAbort;
+
   if (!phaseDone(phases, "patch")) {
     output.write(`${ui.progress("Resuming patch")}\n`);
     await phaseController.begin("patch", {
@@ -713,8 +762,6 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
       }
     }
 
-    const taskAbort = new AbortController();
-    activeTask.abortController = taskAbort;
     let streamingActive = false;
     try {
       response = await model.respond({
@@ -728,14 +775,16 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
         },
         onToken(token) {
           if (!streamingActive) {
-            output.write(`${ui.progress("Streaming model response")}\n`);
+            output.write(`${ui.assistantStreamHeader("assistant")}\n`);
             streamingActive = true;
           }
           output.write(token);
         },
         signal: taskAbort.signal
       });
-      if (streamingActive) output.write("\n");
+      if (streamingActive) {
+        output.write(`\n${ui.assistantStreamFooter()}\n`);
+      }
     } catch (error) {
       const errorMessage = error?.message || String(error);
       output.write(`${ui.warning(`Model error: ${errorMessage}. Continuing with a fallback response so the task can finish cleanly.`)}\n`);
@@ -779,6 +828,7 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
   if (!phaseDone(phases, "verify")) {
     output.write(`${ui.progress("Resuming verification")}\n`);
     await phaseController.begin("verify");
+    let resumeRepairStreaming = false;
     const verification = await verifyAndRepair({
       activeTask,
       tools,
@@ -787,9 +837,24 @@ async function runResumeLifecycle({ activeTask, phaseController, tools, model, c
       projectSummary,
       allowedRepairTools: [...new Set([...TASK_PHASES.patch.allowedTools, ...TASK_PHASES.verify.allowedTools])],
       onProgress(message) {
+        if (resumeRepairStreaming) {
+          output.write(`\n${ui.assistantStreamFooter()}\n`);
+          resumeRepairStreaming = false;
+        }
         output.write(`${ui.progress(message)}\n`);
-      }
+      },
+      onToken(token) {
+        if (!resumeRepairStreaming) {
+          output.write(`${ui.assistantStreamHeader("repair")}\n`);
+          resumeRepairStreaming = true;
+        }
+        output.write(token);
+      },
+      signal: taskAbort.signal
     });
+    if (resumeRepairStreaming) {
+      output.write(`\n${ui.assistantStreamFooter()}\n`);
+    }
     await phaseController.complete("verify", { verification_result: verification || { ok: true } });
   }
 
