@@ -13,23 +13,22 @@ the sub-bullets. The high-level checklist immediately below mirrors that.
 
 ## Resume Point For The Next Agent
 
-- **Latest completed slice:** `dependency_graph(path?)` for workspace-
-  level and focused import graph summaries.
-- **Test baseline:** `npm test` → 214 tests pass (0 skipped, 0
-  failing); `npm run test:e2e` → 15 e2e tests, 14 pass and 1
-  pytest fixture skips when `pytest` is unavailable.
+- **Latest completed slice:** `component_map()` for React component
+  discovery and JSX render edges.
+- **Test baseline:** `npm test` → 216 tests pass (0 skipped, 0
+  failing); `npm run test:e2e` → 15 e2e tests pass.
 - **Last two slices in order:**
-  1. `/resume <task-id>` — the CLI loads a recorded task, reconstructs
-     its phase controller, rejects non-resumable tasks, records a
-     `task_resumed` event, and continues at the next incomplete phase.
-  2. `dependency_graph(path?)` — `src/code/code-index.js` builds a
+  1. `dependency_graph(path?)` — `src/code/code-index.js` builds a
      workspace import graph with resolved internal edges and external
      imports; the runtime/model tool returns the full graph or a
      focused dependency subgraph plus direct dependents for a path.
+  2. `component_map()` — `src/code/code-index.js` detects common
+     React function/class/arrow component declarations and links JSX
+     tags to local/imported components; runtime/model tools and phase
+     allowed-tools expose it.
 
 - **Recommended next slice:** the rest of item 8, starting with
-  `component_map()`, then signature-change impact, tsconfig-paths,
-  and Python imports.
+  signature-change impact, then tsconfig-paths and Python imports.
 
 Current status:
 
@@ -164,9 +163,9 @@ Current status:
   recorded task and continues at the next incomplete phase using
   persisted task artifacts. Remaining limitation: it does not
   resurrect a deleted temp shadow workspace after a process restart.
-- [~] Dependency-aware edits and cross-file binding (item 8) — four
+- [~] Dependency-aware edits and cross-file binding (item 8) — five
   slices land (cross-file binding, rename impact, repair import graph,
-  dependency graph).
+  dependency graph, component map).
   `src/code/import-resolver.js` is the new shared resolver: relative-import sources resolve against the workspace
   file set with the standard `.ts/.tsx/.js/.jsx/.mjs/.cjs` extension
   list and an `index.<ext>` fallback; `src/checks/relevant-files.js`
@@ -194,7 +193,9 @@ Current status:
   `dependency_graph(path?)` is wired through runtime/model tools and
   phase allowed-tools, returning whole-workspace nodes, internal
   edges, external imports, and focused path subgraphs with direct
-  dependents. Still open: `component_map()` tool, signature-change
+  dependents. `component_map()` is wired through the same runtime/model
+  and phase surfaces, returning best-effort React component
+  declarations and JSX render edges. Still open: signature-change
   impact (renames covered; arg-list rewrites not yet), tsconfig-paths
   alias resolution, and Python `from x import y` resolution.
 - [ ] Real language-server integration, TypeScript first (item 9) — not started.
@@ -202,10 +203,9 @@ Current status:
 
 Where we are now:
 
-- Latest verified baseline: `npm test` passes with 214 tests
+- Latest verified baseline: `npm test` passes with 216 tests
   (0 skipped, 0 failing). `npm run test:e2e` runs 15 end-to-end
-  tests; on this machine 14 pass and the pytest fixture skips when
-  `pytest` is unavailable.
+  tests, all passing.
 - The Phase 2 baseline (seven-phase lifecycle, structured task
   artifacts, snapshot-based undo, shadow workspace, regex
   code-intel, targeted check runner, bounded repair loop, styled
@@ -243,7 +243,8 @@ Carried forward from Phase 2:
   `rename_file`), `apply_patch`, `run_command`, broad and targeted check
   runners, code intelligence (`find_symbols`, `find_definition`,
   `find_references`, `find_imports`, `find_exports`, `route_map`,
-  `symbol_callers`, `symbol_dependencies`, `dependency_graph`).
+  `symbol_callers`, `symbol_dependencies`, `dependency_graph`,
+  `component_map`).
 - Shadow workspace via git worktree or filtered temp copy, with apply-back,
   hash-based conflict detection, and per-file keep/apply/save resolution.
 - Bounded verify-and-repair loop (3 attempts) that prefers targeted runs when
@@ -274,8 +275,7 @@ exact `[x]` / `[~]` / `[ ]` state. Items 9–10 are not yet started.
 
 Recommended next steps in priority order:
 
-1. Remaining item 8 leftovers: `component_map()` React-component
-   discovery, signature-change impact
+1. Remaining item 8 leftovers: signature-change impact
    (parameter list / return type rewrites — distinct from
    rename, requires the model's edit-spec or a pre-edit AST
    diff), tsconfig-paths alias resolution (extend
@@ -862,9 +862,9 @@ finished.
 ## 8. Dependency-Aware Edits And Cross-File Binding
 
 Status: in progress. Cross-file binding, foundational symbol tools,
-repair import-graph hints, and `dependency_graph(path?)` have landed;
-`component_map`, signature-change impact, tsconfig-paths, and Python
-resolution are still open.
+repair import-graph hints, `dependency_graph(path?)`, and
+`component_map()` have landed; signature-change impact,
+tsconfig-paths, and Python resolution are still open.
 
 ### Goal
 
@@ -911,7 +911,11 @@ breakage.
         nodes, resolved internal edges, external imports, and
         summary counts; focused mode includes reachable dependencies
         plus direct dependents that import the path.
-  - [ ] `component_map()` — React component discovery.
+  - [x] `component_map()` — React component discovery. Detects
+        common function, arrow, wrapped `memo` / `forwardRef`, and
+        class component declarations, then links JSX tags inside
+        component bodies to local/imported components when the import
+        graph can resolve the target file.
 - [~] Pre-patch impact analysis: when the model is about to rename or change
   the signature of an exported symbol, the pre-patch plan from item 3
   enumerates affected files and prompts before the change lands.
@@ -946,8 +950,10 @@ breakage.
 - [x] Tests with imports across folders, default vs named imports, and
   files that only mention the name without importing it
   (`test/import-resolver.test.js` — 7 tests;
-  `test/symbol-callers.test.js` — 9 tests). Re-export and dynamic-
-  import coverage is open.
+  `test/symbol-callers.test.js` — 9 tests). Component-map tests in
+  `test/code-index.test.js` cover React component discovery, render
+  edges, and runtime exposure. Re-export and dynamic-import coverage
+  is open.
 
 ### Notes for the next agent
 
@@ -973,6 +979,10 @@ breakage.
   does not understand tsconfig aliases, CommonJS `require()`,
   dynamic imports, re-exports, or Python imports until the resolver
   grows those capabilities.
+- `component_map()` is best-effort and regex-based. It does not parse
+  anonymous default exports, HOC chains beyond simple `memo` /
+  `forwardRef`, polymorphic lower-case components, or exact JSX
+  control flow.
 
 ### Definition Of Done
 

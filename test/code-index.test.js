@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildCodeIndex, detectRoutes, findReferences } from "../src/code/code-index.js";
+import { buildCodeIndex, detectComponents, detectRoutes, findReferences } from "../src/code/code-index.js";
 import { createToolRuntime } from "../src/tools/runtime.js";
 
 function config() {
@@ -189,6 +189,48 @@ test("detectRoutes finds Express, React Router, and Next.js routes", async () =>
   }
 });
 
+test("detectComponents finds React components and render edges", async () => {
+  const cwd = await makeDir();
+  try {
+    await mkdir(path.join(cwd, "src"), { recursive: true });
+    await writeFile(path.join(cwd, "src/Button.tsx"), [
+      "export default function Button() {",
+      "  return <button />;",
+      "}",
+      ""
+    ].join("\n"));
+    await writeFile(path.join(cwd, "src/Card.tsx"), [
+      "export const Card = () => (",
+      "  <section><Button /></section>",
+      ");",
+      ""
+    ].join("\n"));
+    await writeFile(path.join(cwd, "src/App.tsx"), [
+      "import PrimaryButton from './Button';",
+      "import { Card } from './Card';",
+      "",
+      "export default function App() {",
+      "  return <main><Card /><PrimaryButton /></main>;",
+      "}",
+      ""
+    ].join("\n"));
+
+    const index = await buildCodeIndex({
+      cwd,
+      files: ["src/Button.tsx", "src/Card.tsx", "src/App.tsx"]
+    });
+    const map = await detectComponents({ cwd, codeIndex: index });
+    assert.equal(map.ok, true);
+    assert.equal(map.component_count, 3);
+    const ids = map.components.map((component) => component.id);
+    assert.deepEqual(ids, ["src/App.tsx#App", "src/Button.tsx#Button", "src/Card.tsx#Card"]);
+    assert.ok(map.edges.some((edge) => edge.from === "src/App.tsx#App" && edge.to === "src/Button.tsx#Button" && edge.tag === "PrimaryButton" && edge.via === "import"));
+    assert.ok(map.edges.some((edge) => edge.from === "src/App.tsx#App" && edge.to === "src/Card.tsx#Card" && edge.via === "import"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test("runtime exposes findSymbols, findDefinition, findReferences", async () => {
   const cwd = await makeDir();
   try {
@@ -208,6 +250,22 @@ test("runtime exposes findSymbols, findDefinition, findReferences", async () => 
     const refs = await tools.findReferences("updateUser");
     assert.ok(refs.references.length >= 1);
     assert.ok(refs.references.every((r) => r.file === "b.js"));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("runtime component_map returns React component discovery", async () => {
+  const cwd = await makeDir();
+  try {
+    await writeFile(path.join(cwd, "Widget.jsx"), [
+      "export const Widget = () => <div />;",
+      ""
+    ].join("\n"));
+    const tools = createToolRuntime({ cwd, config: config(), requestApproval: async () => ({ approved: true }) });
+    const map = await tools.componentMap();
+    assert.equal(map.ok, true);
+    assert.ok(map.components.some((component) => component.id === "Widget.jsx#Widget"));
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

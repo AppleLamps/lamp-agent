@@ -286,6 +286,86 @@ export function dependencyGraph({ codeIndex, file = null } = {}) {
   };
 }
 
+/**
+ * Best-effort React component discovery. This stays regex-based to
+ * match the rest of the current code index: it detects common
+ * function, arrow, class, and default-export component declarations
+ * in JS/TS React files, then links JSX tags inside each component
+ * body to local or imported components when the target can be
+ * resolved through the existing import graph.
+ */
+export async function detectComponents({ cwd, codeIndex }) {
+  const fileSet = new Set(codeIndex?.files || []);
+  const importsByFile = codeIndex?.imports || new Map();
+  const components = [];
+  const tagsByComponent = new Map();
+
+  for (const file of codeIndex?.files || []) {
+    if (!isReactLikeFile(file)) continue;
+    const lines = await readWorkspaceLines(cwd, file);
+    if (!lines.length) continue;
+
+    const fileComponents = findComponentsInLines(lines, file);
+    const importMap = componentImportMap(importsByFile.get(file) || [], file, fileSet);
+    const localNames = new Set(fileComponents.map((component) => component.name));
+
+    for (let index = 0; index < fileComponents.length; index += 1) {
+      const component = fileComponents[index];
+      const next = fileComponents[index + 1];
+      const endLine = next ? next.line - 1 : lines.length;
+      const bodyLines = lines.slice(component.line - 1, endLine);
+      const jsxTags = findJsxTags(bodyLines);
+      tagsByComponent.set(component.id, jsxTags);
+      components.push({
+        ...component,
+        end_line: endLine,
+        jsx_tags: jsxTags,
+        imported_components: [...new Set(jsxTags.filter((tag) => importMap.has(tag)))].sort(),
+        local_components: [...new Set(jsxTags.filter((tag) => localNames.has(tag) && tag !== component.name))].sort()
+      });
+    }
+  }
+
+  const componentByFileAndName = new Map(components.map((component) => [`${component.file}\0${component.name}`, component]));
+  const edges = [];
+  for (const component of components) {
+    const importMap = componentImportMap(importsByFile.get(component.file) || [], component.file, fileSet);
+    for (const tag of tagsByComponent.get(component.id) || []) {
+      let target = componentByFileAndName.get(`${component.file}\0${tag}`);
+      let via = "local";
+      if (!target && importMap.has(tag)) {
+        const imported = importMap.get(tag);
+        target = componentByFileAndName.get(`${imported.resolved}\0${tag}`);
+        if (!target && imported.kind === "default") {
+          target = components.find((candidate) => candidate.file === imported.resolved && candidate.default_export);
+          target ||= components.find((candidate) => candidate.file === imported.resolved && candidate.exported);
+          target ||= components.find((candidate) => candidate.file === imported.resolved);
+        }
+        via = "import";
+      }
+      if (!target || target.id === component.id) continue;
+      edges.push({
+        from: component.id,
+        to: target.id,
+        from_file: component.file,
+        to_file: target.file,
+        tag,
+        via
+      });
+    }
+  }
+
+  edges.sort((a, b) => `${a.from}\0${a.to}\0${a.tag}`.localeCompare(`${b.from}\0${b.to}\0${b.tag}`));
+  return {
+    ok: true,
+    components: components.sort((a, b) => a.id.localeCompare(b.id)),
+    edges,
+    component_count: components.length,
+    edge_count: edges.length,
+    indexed: fileSet.size
+  };
+}
+
 function collectRelatedGraphFiles(graph, root) {
   const included = new Set();
   if (!graph.has(root)) return included;
@@ -302,6 +382,97 @@ function collectRelatedGraphFiles(graph, root) {
     if (deps.has(root)) included.add(from);
   }
   return included;
+}
+
+function isReactLikeFile(file) {
+  return /\.(jsx|tsx)$/.test(file) || /\.(js|ts)$/.test(file);
+}
+
+function findComponentsInLines(lines, file) {
+  const components = [];
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const line = stripLineComments(lines[idx]);
+    const lineNumber = idx + 1;
+    let match;
+    let name;
+    let kind;
+    let exported = false;
+    let defaultExport = false;
+
+    if ((match = line.match(/^\s*export\s+default\s+(?:async\s+)?function\s+([A-Z][\w$]*)\b/))) {
+      name = match[1];
+      kind = "function";
+      exported = true;
+      defaultExport = true;
+    } else if ((match = line.match(/^\s*export\s+(?:async\s+)?function\s+([A-Z][\w$]*)\b/))) {
+      name = match[1];
+      kind = "function";
+      exported = true;
+    } else if ((match = line.match(/^\s*(?:async\s+)?function\s+([A-Z][\w$]*)\b/))) {
+      name = match[1];
+      kind = "function";
+    } else if ((match = line.match(/^\s*export\s+(?:const|let|var)\s+([A-Z][\w$]*)\s*=\s*(?:React\.)?(?:memo|forwardRef)\s*\(/))) {
+      name = match[1];
+      kind = "wrapped";
+      exported = true;
+    } else if ((match = line.match(/^\s*export\s+(?:const|let|var)\s+([A-Z][\w$]*)\s*=\s*/))) {
+      name = match[1];
+      kind = "arrow";
+      exported = true;
+    } else if ((match = line.match(/^\s*(?:const|let|var)\s+([A-Z][\w$]*)\s*=\s*(?:React\.)?(?:memo|forwardRef)\s*\(/))) {
+      name = match[1];
+      kind = "wrapped";
+    } else if ((match = line.match(/^\s*(?:const|let|var)\s+([A-Z][\w$]*)\s*=\s*/))) {
+      name = match[1];
+      kind = "arrow";
+    } else if ((match = line.match(/^\s*export\s+default\s+class\s+([A-Z][\w$]*)\b/))) {
+      name = match[1];
+      kind = "class";
+      exported = true;
+      defaultExport = true;
+    } else if ((match = line.match(/^\s*export\s+class\s+([A-Z][\w$]*)\b/))) {
+      name = match[1];
+      kind = "class";
+      exported = true;
+    } else if ((match = line.match(/^\s*class\s+([A-Z][\w$]*)\b/))) {
+      name = match[1];
+      kind = "class";
+    }
+
+    if (!name) continue;
+    const bodyPreview = lines.slice(idx, Math.min(lines.length, idx + 12)).join("\n");
+    const looksLikeComponent = kind === "class"
+      ? /extends\s+(?:React\.)?(?:Pure)?Component\b/.test(line)
+      : /<[A-Z][\w$.]*\b|<[a-z][\w-]*\b|React\.createElement\s*\(/.test(bodyPreview);
+    if (!looksLikeComponent) continue;
+    components.push({ id: `${file}#${name}`, name, file, line: lineNumber, kind, exported, default_export: defaultExport });
+  }
+  return components;
+}
+
+function componentImportMap(imports, from, fileSet) {
+  const map = new Map();
+  for (const entry of imports || []) {
+    const resolved = resolveImport({ from, source: entry?.source || "", fileSet });
+    if (!resolved) continue;
+    for (const name of entry.names || []) {
+      if (!name?.name || !/^[A-Z]/.test(name.name)) continue;
+      map.set(name.name, { resolved, kind: name.kind });
+    }
+  }
+  return map;
+}
+
+function findJsxTags(lines) {
+  const tags = new Set();
+  const tagRe = /<\/?\s*([A-Z][\w$]*)(?:\s|\/|>|\.)/g;
+  for (const line of lines) {
+    let match;
+    while ((match = tagRe.exec(line))) {
+      tags.add(match[1]);
+    }
+  }
+  return [...tags].sort();
 }
 
 function importLocalName(importEntry, exportedName, resolvedFile, codeIndex) {

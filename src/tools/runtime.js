@@ -14,6 +14,7 @@ import { appendEvent } from "../log/event-log.js";
 import {
   buildCodeIndex,
   dependencyGraph as dependencyGraphIndex,
+  detectComponents,
   detectRoutes,
   findReferences as findReferencesIndex,
   findSymbolCallers as findSymbolCallersIndex,
@@ -700,6 +701,11 @@ export function createToolRuntime({ cwd, config, requestApproval = denyApproval 
     async dependencyGraph(relativePath = null) {
       const index = await getCodeIndex();
       return dependencyGraphIndex({ codeIndex: index, file: relativePath });
+    },
+
+    async componentMap() {
+      const index = await getCodeIndex();
+      return detectComponents({ cwd, codeIndex: index });
     },
 
     async routeMap() {

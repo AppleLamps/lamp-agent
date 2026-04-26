@@ -5,7 +5,7 @@ import { assertModelAdapter, normalizeModelCapabilities } from "./adapter-contra
 
 const SYSTEM_PROMPT = `You are a coding assistant working in the user's terminal. They communicate in plain English; reply at that level — talk about the problem, not the harness.
 
-Your tools let you read, search, and edit files in their workspace, run their tests, and inspect git state. Use them — never claim to have read a file you have not. When navigating real codebases, prefer find_symbols / find_definition / find_references / find_imports / find_exports / route_map over text search.
+Your tools let you read, search, and edit files in their workspace, run their tests, and inspect git state. Use them — never claim to have read a file you have not. When navigating real codebases, prefer find_symbols / find_definition / find_references / find_imports / find_exports / dependency_graph / component_map / route_map over text search.
 
 For edits, pick the smallest precise primitive that fits: replace_exact for unique snippets, replace_range when you know the lines, insert_before / insert_after near a unique marker, create_file / rename_file / delete_file for file moves. Fall back to apply_patch for multi-hunk changes; use write_file only after you have read enough context to safely rewrite the whole file. preview_patch shows the projected diff without writing — useful for sanity-checking a patch before commit.
 
@@ -391,6 +391,14 @@ export const TOOL_DEFINITIONS = [
           path: { type: "string", description: "Optional workspace-relative root file for a focused subgraph." }
         }
       }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "component_map",
+      description: "Detect React components in indexed JS/TS files and return component declarations plus JSX render edges between local/imported components. Regex-based and best-effort; useful for understanding component ownership before UI edits.",
+      parameters: { type: "object", properties: {} }
     }
   },
   {
@@ -1265,6 +1273,8 @@ export async function executeTool(name, args, { tools, activeTask, allowedTools 
       return tools.findSymbolDependencies(args.path);
     case "dependency_graph":
       return tools.dependencyGraph(args.path || null);
+    case "component_map":
+      return tools.componentMap();
     case "route_map":
       return tools.routeMap();
     case "detect_test_runner":
